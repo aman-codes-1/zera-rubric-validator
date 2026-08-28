@@ -13,6 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL('https://rhea-review-lab.aman-codes0.chatgpt.site'),
   title: 'Rhea Review - Prompt & Rubric QA',
   description:
     'Evaluate prompt clarity, rubric quality, alignment, complexity, and consistency with exact corrections.',
