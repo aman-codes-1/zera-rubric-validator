@@ -443,7 +443,7 @@ export default function Home() {
               <Braces className="size-[18px]" />
             </span>
             <div>
-              <strong className="block text-sm tracking-tight">Rhea CheckSet</strong>
+              <strong className="block text-sm tracking-tight">Zera Feather</strong>
               <span className="block text-xs text-zinc-500">Documentation-grounded rubric QA</span>
             </div>
           </div>
@@ -454,11 +454,24 @@ export default function Home() {
       </header>
 
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:py-12">
-        <nav className="inline-flex rounded-xl border border-white/10 bg-white/[0.025] p-1 text-xs text-zinc-500">
-          <span className="rounded-lg px-4 py-2">AppSet: Prompt & Rubric Review</span>
-          <span className="rounded-lg bg-emerald-400 px-4 py-2 font-semibold text-[#06251a]">
-            CheckSet: Validate Tasks
-          </span>
+        <nav className="inline-flex flex-wrap rounded-xl border border-white/10 bg-white/[0.025] p-1 text-xs text-zinc-500">
+          <button
+            type="button"
+            disabled
+            aria-disabled="true"
+            title="Coming soon"
+            className="cursor-not-allowed rounded-lg px-4 py-2 opacity-45"
+          >
+            Validate Prompt & Rubrics
+          </button>
+          <button
+            type="button"
+            aria-current="page"
+            onClick={() => document.getElementById('rubrics-json')?.focus()}
+            className="rounded-lg bg-emerald-400 px-4 py-2 font-semibold text-[#06251a] transition hover:bg-emerald-300"
+          >
+            Validate Rubrics
+          </button>
         </nav>
 
         <section className="mt-8 max-w-3xl">
@@ -466,7 +479,7 @@ export default function Home() {
             Nexus / CheckSet
           </p>
           <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">
-            Validate quickbooks-angular rubrics
+            Validate feather rubrics
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-400">
             Check batch requirements, JSON structure, tags, section prefixes, reproduction steps,
@@ -484,7 +497,7 @@ export default function Home() {
                     Documentation context is prepared before every AI review.
                   </p>
                   <p className="mt-1 text-xs leading-5 text-zinc-400">
-                    Rhea retrieves current product documentation at review time. It does not retrain
+                    Zera retrieves current product documentation at review time. It does not retrain
                     the model or store a new model.
                   </p>
                 </div>
@@ -546,17 +559,10 @@ export default function Home() {
                   >
                     <FileJson2 /> Load provided example
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={reset}
-                    className="text-zinc-400 hover:bg-white/5 hover:text-white"
-                  >
-                    <RefreshCcw /> Reset
-                  </Button>
                 </div>
               </div>
               <Textarea
+                id="rubrics-json"
                 value={jsonInput}
                 onChange={(event) => setJsonInput(event.target.value)}
                 placeholder={'[\n  {\n    "criterion": "Home: observable issue",\n    "score": 10,\n    "tags": ["bug"],\n    "forms": { ... }\n  }\n]'}
@@ -575,14 +581,24 @@ export default function Home() {
               </div>
             )}
 
-            <Button
-              onClick={runValidation}
-              disabled={!canValidate}
-              className="h-11 bg-emerald-400 px-5 font-semibold text-[#06251a] hover:bg-emerald-300 disabled:bg-zinc-800 disabled:text-zinc-500"
-            >
-              {isRunning ? <Loader2 className="animate-spin" /> : <Play />}
-              {isRunning ? 'Researching docs and validating…' : 'Validate rubric batch'}
-            </Button>
+            <div className="flex flex-wrap gap-3">
+              <Button
+                onClick={runValidation}
+                disabled={!canValidate}
+                className="h-11 bg-emerald-400 px-5 font-semibold text-[#06251a] hover:bg-emerald-300 disabled:bg-zinc-800 disabled:text-zinc-500"
+              >
+                {isRunning ? <Loader2 className="animate-spin" /> : <Play />}
+                Validate Rubrics
+              </Button>
+              <Button
+                variant="outline"
+                onClick={reset}
+                disabled={isRunning}
+                className="h-11 border-white/10 bg-transparent px-5 text-zinc-300 hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <RefreshCcw /> Clear Fields
+              </Button>
+            </div>
           </section>
 
           <aside className="space-y-5 xl:sticky xl:top-6 xl:self-start">

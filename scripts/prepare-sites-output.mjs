@@ -14,8 +14,8 @@ await cp(exportDirectory, staticDirectory, { recursive: true });
 await cp(workerEntry, path.join(serverDirectory, 'index.js'));
 
 const workerConfiguration = {
-  topLevelName: 'rhea-review',
-  name: 'rhea-review',
+  topLevelName: 'zera-review',
+  name: 'zera-review',
   compatibility_date: '2026-05-15',
   compatibility_flags: ['nodejs_compat'],
   main: 'index.js',
