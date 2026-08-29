@@ -390,12 +390,29 @@ export default function Home() {
   const [isRunning, setIsRunning] = useState(false);
   const [notice, setNotice] = useState('');
   const [hasReview, setHasReview] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState({ prompt: false, rubrics: false });
 
   const wordCount = useMemo(() => prompt.trim().split(/\s+/).filter(Boolean).length, [prompt]);
   const rubricCount = useMemo(() => parseRubrics(rubrics).length, [rubrics]);
   const highCount = analysis.findings.filter((finding) => finding.severity === 'High').length;
 
   function runReview() {
+    const errors = {
+      prompt: !prompt.trim(),
+      rubrics: !rubrics.trim(),
+    };
+
+    if (errors.prompt || errors.rubrics) {
+      setFieldErrors(errors);
+      setNotice('Complete the required fields');
+      window.setTimeout(() => setNotice(''), 1800);
+      window.requestAnimationFrame(() => {
+        document.getElementById(errors.prompt ? 'prompt-input' : 'rubrics-input')?.focus();
+      });
+      return;
+    }
+
+    setFieldErrors({ prompt: false, rubrics: false });
     setIsRunning(true);
     setNotice('');
     window.setTimeout(() => {
@@ -434,6 +451,7 @@ export default function Home() {
     setAnalysis(evaluateTask('', ''));
     setActiveTab('findings');
     setHasReview(false);
+    setFieldErrors({ prompt: false, rubrics: false });
     setNotice('Fields cleared');
     window.setTimeout(() => setNotice(''), 1800);
   }
@@ -444,6 +462,7 @@ export default function Home() {
     setAnalysis(evaluateTask(EXAMPLE_PROMPT, EXAMPLE_RUBRICS));
     setActiveTab('findings');
     setHasReview(true);
+    setFieldErrors({ prompt: false, rubrics: false });
     setNotice('Example loaded');
     window.setTimeout(() => setNotice(''), 1800);
   }
@@ -559,11 +578,26 @@ export default function Home() {
                     <span className="font-normal text-muted-foreground">{wordCount} words</span>
                   </span>
                   <Textarea
+                    id="prompt-input"
                     value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setPrompt(value);
+                      if (value.trim()) setFieldErrors((current) => ({ ...current, prompt: false }));
+                    }}
                     placeholder="Paste the task prompt here…"
-                    className="min-h-40 resize-y rounded-2xl border-border bg-white p-4 leading-6 shadow-sm"
+                    required
+                    aria-invalid={fieldErrors.prompt}
+                    aria-describedby={fieldErrors.prompt ? 'prompt-error' : undefined}
+                    className={`min-h-40 resize-y rounded-2xl bg-white p-4 leading-6 shadow-sm ${
+                      fieldErrors.prompt ? 'border-destructive focus-visible:ring-destructive/25' : 'border-border'
+                    }`}
                   />
+                  {fieldErrors.prompt && (
+                    <span id="prompt-error" className="mt-2 block text-xs font-medium text-destructive">
+                      Prompt is required.
+                    </span>
+                  )}
                 </label>
 
                 <label className="block">
@@ -572,11 +606,26 @@ export default function Home() {
                     <span className="font-normal text-muted-foreground">{rubricCount} criteria</span>
                   </span>
                   <Textarea
+                    id="rubrics-input"
                     value={rubrics}
-                    onChange={(event) => setRubrics(event.target.value)}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      setRubrics(value);
+                      if (value.trim()) setFieldErrors((current) => ({ ...current, rubrics: false }));
+                    }}
                     placeholder={'1. First observable criterion\n2. Second observable criterion'}
-                    className="min-h-64 resize-y rounded-2xl border-border bg-white p-4 font-mono text-[13px] leading-6 shadow-sm"
+                    required
+                    aria-invalid={fieldErrors.rubrics}
+                    aria-describedby={fieldErrors.rubrics ? 'rubrics-error' : undefined}
+                    className={`min-h-64 resize-y rounded-2xl bg-white p-4 font-mono text-[13px] leading-6 shadow-sm ${
+                      fieldErrors.rubrics ? 'border-destructive focus-visible:ring-destructive/25' : 'border-border'
+                    }`}
                   />
+                  {fieldErrors.rubrics && (
+                    <span id="rubrics-error" className="mt-2 block text-xs font-medium text-destructive">
+                      Rubrics are required.
+                    </span>
+                  )}
                 </label>
 
                 <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
