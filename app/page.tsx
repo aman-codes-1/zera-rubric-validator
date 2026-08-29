@@ -94,6 +94,91 @@ const BATCHES: Record<
 };
 
 const VALID_TAGS = new Set(['bug', 'feature request']);
+const RUBRIC_KEYS = ['criterion', 'score', 'tags', 'forms'] as const;
+const FORM_KEYS = [
+  'page_or_workflow',
+  'reproduction_steps',
+  'expected_behavior',
+  'actual_behavior',
+] as const;
+
+class JsonFormatError extends Error {
+  issues: string[];
+
+  constructor(issues: string[]) {
+    super('The JSON does not match the required rubric format.');
+    this.name = 'JsonFormatError';
+    this.issues = issues;
+  }
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function keyIssues(
+  record: Record<string, unknown>,
+  expectedKeys: readonly string[],
+  path: string,
+) {
+  const actualKeys = Object.keys(record);
+  const missing = expectedKeys.filter((key) => !actualKeys.includes(key));
+  const unexpected = actualKeys.filter((key) => !expectedKeys.includes(key));
+
+  return [
+    ...missing.map((key) => `${path} is missing required field “${key}”.`),
+    ...unexpected.map((key) => `${path} contains unexpected field “${key}”.`),
+  ];
+}
+
+function validateRubricFormat(value: unknown, index: number) {
+  const path = `Rubric ${index + 1}`;
+  if (!isObject(value)) return [`${path} must be a JSON object.`];
+
+  const issues = keyIssues(value, RUBRIC_KEYS, path);
+
+  if ('criterion' in value && (typeof value.criterion !== 'string' || !value.criterion.trim())) {
+    issues.push(`${path} → criterion must be a non-empty string.`);
+  }
+
+  if (
+    'score' in value &&
+    (typeof value.score !== 'number' || !Number.isFinite(value.score))
+  ) {
+    issues.push(`${path} → score must be a finite number.`);
+  }
+
+  if ('tags' in value) {
+    if (!Array.isArray(value.tags)) {
+      issues.push(`${path} → tags must be an array, for example [“bug”].`);
+    } else if (
+      value.tags.length !== 1 ||
+      typeof value.tags[0] !== 'string' ||
+      !value.tags[0].trim()
+    ) {
+      issues.push(`${path} → tags must contain exactly one non-empty string.`);
+    }
+  }
+
+  if ('forms' in value) {
+    if (!isObject(value.forms)) {
+      issues.push(`${path} → forms must be a JSON object.`);
+    } else {
+      const forms = value.forms;
+      issues.push(...keyIssues(forms, FORM_KEYS, `${path} → forms`));
+      FORM_KEYS.forEach((key) => {
+        if (
+          key in forms &&
+          (typeof forms[key] !== 'string' || !forms[key].trim())
+        ) {
+          issues.push(`${path} → forms.${key} must be a non-empty string.`);
+        }
+      });
+    }
+  }
+
+  return issues;
+}
 
 function readString(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
@@ -306,8 +391,30 @@ function buildBatchSummary(rubrics: RubricRecord[], key: BatchKey): BatchSummary
 }
 
 function parseInput(value: string) {
-  const parsed: unknown = JSON.parse(value);
-  if (!Array.isArray(parsed)) throw new Error('The top-level JSON value must be an array.');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'The JSON syntax is invalid.';
+    throw new JsonFormatError([`Invalid JSON syntax: ${detail}`]);
+  }
+
+  if (!Array.isArray(parsed)) {
+    throw new JsonFormatError(['The top-level JSON value must be an array of rubric objects.']);
+  }
+  if (parsed.length === 0) {
+    throw new JsonFormatError(['The top-level array must contain at least one rubric object.']);
+  }
+
+  const issues = parsed.flatMap(validateRubricFormat);
+  if (issues.length) {
+    const shownIssues = issues.slice(0, 15);
+    if (issues.length > shownIssues.length) {
+      shownIssues.push(`${issues.length - shownIssues.length} additional format issue(s) were found.`);
+    }
+    throw new JsonFormatError(shownIssues);
+  }
+
   return parsed.map(normalizeRubric);
 }
 
@@ -321,7 +428,7 @@ export default function Home() {
   const [application, setApplication] = useState('quickbooks-angular');
   const [batchKey, setBatchKey] = useState<BatchKey>('a');
   const [jsonInput, setJsonInput] = useState('');
-  const [parseError, setParseError] = useState('');
+  const [parseErrors, setParseErrors] = useState<string[]>([]);
   const [results, setResults] = useState<RubricResult[]>([]);
   const [batchSummary, setBatchSummary] = useState<BatchSummary | null>(null);
   const [aiStatus, setAiStatus] = useState<AiStatus>('idle');
@@ -345,7 +452,7 @@ export default function Home() {
     const response = await fetch('/sample-rubrics.json');
     const text = await response.text();
     setJsonInput(text);
-    setParseError('');
+    setParseErrors([]);
     setResults([]);
     setBatchSummary(null);
     setAiResponse(null);
@@ -355,7 +462,7 @@ export default function Home() {
 
   function reset() {
     setJsonInput('');
-    setParseError('');
+    setParseErrors([]);
     setResults([]);
     setBatchSummary(null);
     setAiResponse(null);
@@ -364,7 +471,7 @@ export default function Home() {
   }
 
   async function runValidation() {
-    setParseError('');
+    setParseErrors([]);
     setAiError('');
     setAiResponse(null);
 
@@ -372,7 +479,14 @@ export default function Home() {
     try {
       rubrics = parseInput(jsonInput);
     } catch (error) {
-      setParseError(error instanceof Error ? error.message : 'The JSON could not be parsed.');
+      setParseErrors(
+        error instanceof JsonFormatError
+          ? error.issues
+          : [error instanceof Error ? error.message : 'The JSON could not be parsed.'],
+      );
+      setResults([]);
+      setBatchSummary(null);
+      setAiStatus('idle');
       return;
     }
 
@@ -571,12 +685,40 @@ export default function Home() {
               />
             </div>
 
-            {parseError && (
-              <div className="flex gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+            {parseErrors.length > 0 && (
+              <div
+                role="alert"
+                className="flex gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200"
+              >
                 <CircleAlert className="mt-0.5 size-4 shrink-0" />
-                <div>
-                  <strong>JSON could not be validated</strong>
-                  <p className="mt-1 text-xs leading-5 text-rose-200/75">{parseError}</p>
+                <div className="min-w-0 flex-1">
+                  <strong>JSON format is invalid</strong>
+                  <p className="mt-1 text-xs leading-5 text-rose-200/75">
+                    Match the structure of the provided rubric JSON file and fix the following:
+                  </p>
+                  <ul className="mt-2 list-disc space-y-1 pl-4 text-xs leading-5 text-rose-100/90">
+                    {parseErrors.map((issue, index) => (
+                      <li key={`${issue}-${index}`}>{issue}</li>
+                    ))}
+                  </ul>
+                  <div className="mt-3 rounded-lg border border-rose-200/10 bg-black/20 p-3">
+                    <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-rose-100/70">
+                      Required JSON format
+                    </p>
+                    <pre className="overflow-x-auto font-mono text-[11px] leading-5 text-rose-50/80">{`[
+  {
+    "criterion": "Section: observable issue",
+    "score": 10,
+    "tags": ["bug"],
+    "forms": {
+      "page_or_workflow": "...",
+      "reproduction_steps": "1. ...",
+      "expected_behavior": "...",
+      "actual_behavior": "..."
+    }
+  }
+]`}</pre>
+                  </div>
                 </div>
               </div>
             )}
