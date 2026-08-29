@@ -118,6 +118,15 @@ function parseRubrics(text: string) {
       text: line.replace(/^\s*(?:\d+[.)]|[-*])\s*/, '').trim(),
     }));
 }
+
+function countWords(text: string) {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function hasCompleteRubrics(text: string) {
+  const criteria = parseRubrics(text);
+  return criteria.length > 0 && criteria.every((criterion) => countWords(criterion.text) >= 3);
+}
 function extractRequirements(text: string) {
   const normalized = text.replace(/\s+/g, ' ').trim();
   const pieces = normalized
@@ -392,15 +401,17 @@ export default function Home() {
   const [hasReview, setHasReview] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({ prompt: false, rubrics: false });
 
-  const wordCount = useMemo(() => prompt.trim().split(/\s+/).filter(Boolean).length, [prompt]);
+  const wordCount = useMemo(() => countWords(prompt), [prompt]);
   const rubricCount = useMemo(() => parseRubrics(rubrics).length, [rubrics]);
-  const canRunReview = Boolean(prompt.trim() && rubrics.trim());
+  const promptIsComplete = wordCount >= 3;
+  const rubricsAreComplete = hasCompleteRubrics(rubrics);
+  const canRunReview = promptIsComplete && rubricsAreComplete;
   const highCount = analysis.findings.filter((finding) => finding.severity === 'High').length;
 
   function runReview() {
     const errors = {
-      prompt: !prompt.trim(),
-      rubrics: !rubrics.trim(),
+      prompt: !promptIsComplete,
+      rubrics: !rubricsAreComplete,
     };
 
     if (errors.prompt || errors.rubrics) {
@@ -576,7 +587,9 @@ export default function Home() {
                 <label className="block">
                   <span className="mb-2 flex items-center justify-between text-sm font-medium">
                     Prompt
-                    <span className="font-normal text-muted-foreground">{wordCount} words</span>
+                    <span className={`font-normal ${prompt.trim() && !promptIsComplete ? 'text-destructive' : 'text-muted-foreground'}`}>
+                      {wordCount} words · 3 minimum
+                    </span>
                   </span>
                   <Textarea
                     id="prompt-input"
@@ -584,7 +597,7 @@ export default function Home() {
                     onChange={(event) => {
                       const value = event.target.value;
                       setPrompt(value);
-                      if (value.trim()) setFieldErrors((current) => ({ ...current, prompt: false }));
+                      if (countWords(value) >= 3) setFieldErrors((current) => ({ ...current, prompt: false }));
                     }}
                     placeholder="Paste the task prompt here…"
                     required
@@ -596,7 +609,7 @@ export default function Home() {
                   />
                   {fieldErrors.prompt && (
                     <span id="prompt-error" className="mt-2 block text-xs font-medium text-destructive">
-                      Prompt is required.
+                      Prompt must contain at least 3 words.
                     </span>
                   )}
                 </label>
@@ -604,7 +617,9 @@ export default function Home() {
                 <label className="block">
                   <span className="mb-2 flex items-center justify-between text-sm font-medium">
                     Rubrics
-                    <span className="font-normal text-muted-foreground">{rubricCount} criteria</span>
+                    <span className={`font-normal ${rubrics.trim() && !rubricsAreComplete ? 'text-destructive' : 'text-muted-foreground'}`}>
+                      {rubricCount} criteria · 3+ words each
+                    </span>
                   </span>
                   <Textarea
                     id="rubrics-input"
@@ -612,7 +627,7 @@ export default function Home() {
                     onChange={(event) => {
                       const value = event.target.value;
                       setRubrics(value);
-                      if (value.trim()) setFieldErrors((current) => ({ ...current, rubrics: false }));
+                      if (hasCompleteRubrics(value)) setFieldErrors((current) => ({ ...current, rubrics: false }));
                     }}
                     placeholder={'1. First observable criterion\n2. Second observable criterion'}
                     required
@@ -624,7 +639,7 @@ export default function Home() {
                   />
                   {fieldErrors.rubrics && (
                     <span id="rubrics-error" className="mt-2 block text-xs font-medium text-destructive">
-                      Rubrics are required.
+                      Every rubric criterion must contain at least 3 words.
                     </span>
                   )}
                 </label>
