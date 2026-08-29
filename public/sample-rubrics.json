@@ -1,0 +1,262 @@
+[
+  {
+    "criterion": "Account Settings: Updating and saving the company \"Name\" in \"Account Settings\" does not update the company name displayed in the top bar.",
+    "score": 10,
+    "tags": [
+      "bug"
+    ],
+    "forms": {
+      "page_or_workflow": "Top bar → User Profile (avatar icon - top-right corner) → Account Settings (option) → Settings (dialog) → Company info (section) → Name → Edit (action) → Edit name (dialog) → Enter name (field) → (Enter company name) → Save → Done → Top bar → \"Aequus LLC\" → (Previous company name not updated)",
+      "reproduction_steps": "1. Go to Top bar.\n2. Access the \"User Profile\" menu (avatar icon - top-right corner).\n3. Click on the \"Account Settings\" option from the \"User Profile\" menu.\n4. Click on the \"Name\" edit action under the \"Company info\" section in the \"Settings\" dialog.\n5. Enter the company name.\n6. Click on the \"Save\" button to save the changes.\n7. Observe that updating and saving the company \"Name\" in \"Account Settings\" does not update the company name displayed in the top bar. ",
+      "expected_behavior": "After updating and saving the company name in Account Settings, the top bar should display the updated company name.",
+      "actual_behavior": "The company name is successfully updated and saved in Account Settings, but the top bar continues to display the previous company name, \"Aequus LLC\"."
+    }
+  },
+  {
+    "criterion": "Account Settings: Updating and saving the company \"Email\" in \"Account Settings\" does not validate the email format, allowing an invalid email address to be saved.",
+    "score": 10,
+    "tags": [
+      "bug"
+    ],
+    "forms": {
+      "page_or_workflow": "Top bar → User Profile (avatar icon - top-right corner) → Account Settings (option) → Settings (dialog) → Company info (section) → Email → Edit (action) → Edit email (dialog) → Enter email (field) → (Enter numbers or special characters) → Save → (Email format not validated and email saved without validation)",
+      "reproduction_steps": "1. Go to Top bar.\n2. Access the \"User Profile\" menu (avatar icon - top-right corner).\n3. Click on the \"Account Settings\" option from the \"User Profile\" menu.\n4. Click on the \"Email\" edit action under the \"Company info\" section in the \"Settings\" dialog.\n5. Enter any invalid email in the \"Enter email\" field, such as numbers or special characters.\n6. Click on the \"Save\" button to save the changes.\n7. Observe that updating and saving the company \"Email\" in \"Account Settings\" does not validate the email format, allowing an invalid email address to be saved.",
+      "expected_behavior": "The company email field should validate the entered email address and should prevent saving the email address if it doesn't follow a valid email format, and should display an appropriate validation error message.",
+      "actual_behavior": "An invalid email containing only numbers or special characters can be saved successfully as the company email without displaying any validation error message."
+    }
+  },
+  {
+    "criterion": "Account Settings: Updating and saving the company \"Phone\" in \"Account Settings\" does not validate the phone format, allowing an invalid phone number to be saved.",
+    "score": 10,
+    "tags": [
+      "bug"
+    ],
+    "forms": {
+      "page_or_workflow": "Top bar → User Profile (avatar icon - top-right corner) → Account Settings (option) → Settings (dialog) → Company info (section) → Phone → Edit (action) → Edit phone (dialog) → Enter phone (field) → (Enter letters or special characters) → Save → (Phone format not validated and phone number saved without validation)",
+      "reproduction_steps": "1. Go to Top bar.\n2. Access the \"User Profile\" menu (avatar icon - top-right corner).\n3. Click on the \"Account Settings\" option from the \"User Profile\" menu.\n4. Click on the \"Phone\" edit action under the \"Company info\" section in the \"Settings\" dialog.\n5. Enter any invalid phone number in the \"Enter phone\" field, such as letters or special characters.\n6. Click on the \"Save\" button to save the changes.\n7. Observe that updating and saving the company \"Phone\" in \"Account Settings\" does not validate the phone format, allowing an invalid phone number to be saved.",
+      "expected_behavior": "The company phone field should validate the entered phone number and should prevent saving the phone number if it doesn't follow a valid phone format, and should display an appropriate validation error message.",
+      "actual_behavior": "An invalid phone number containing only letters or special characters can be saved successfully as the company phone without displaying any validation error message."
+    }
+  },
+  {
+    "criterion": "Account Settings: Updating and saving the company \"Website\" in \"Account Settings\" does not validate the website url format, allowing an invalid website url to be saved.",
+    "score": 10,
+    "tags": [
+      "bug"
+    ],
+    "forms": {
+      "page_or_workflow": "Top bar → User Profile (avatar icon - top-right corner) → Account Settings (option) → Settings (dialog) → Company info (section) → Website → Edit (action) → Edit website (dialog) → Enter website (field) → (Enter special characters) → Save → (Website url format not validated and website url saved without validation)",
+      "reproduction_steps": "1. Go to Top bar.\n2. Access the \"User Profile\" menu (avatar icon - top-right corner).\n3. Click on the \"Account Settings\" option from the \"User Profile\" menu.\n4. Click on the \"Website\" edit action under the \"Company info\" section in the \"Settings\" dialog.\n5. Enter any invalid website url in the \"Enter website\" field, such as special characters.\n6. Click on the \"Save\" button to save the changes.\n7. Observe that updating and saving the company \"Website\" in \"Account Settings\" does not validate the website url format, allowing an invalid website url to be saved.",
+      "expected_behavior": "The company website field should validate the entered website url and should prevent saving the website url if it doesn't follow a valid url format, and should display an appropriate validation error message.",
+      "actual_behavior": "An invalid website url containing only special characters can be saved successfully as the company website without displaying any validation error message."
+    }
+  },
+  {
+    "criterion": "Account Settings: The \"Give feedback\" option in the \"Account Settings\" dialog should be enabled to allow users to submit feedback about the account settings experience and its available configuration options.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Top bar → User Profile (avatar icon - top-right corner) → Account Settings (option) → Settings (dialog) → Scroll down → Give feedback (bottom-left corner) → (Not implemented)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Give feedback\" option should be enabled and should open the available feedback workflow for submitting comments or suggestions related to account settings experience and its available configuration options.",
+      "actual_behavior": "The \"Give feedback\" option in the \"Account Settings\" dialog is disabled, preventing users from providing feedback about the account settings experience and its available configuration options."
+    }
+  },
+  {
+    "criterion": "Home: The \"Last 30 days\" and \"Last month\" date range filters on all the cards under the \"Business at a glance\" section should be enabled to allow users to change the reporting period displayed in each card.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Home → Scroll down → Business at a glance (section) → SALES & GET PAID FUNNEL, BANK ACCOUNTS, PROFIT & LOSS, and EXPENSES (cards) → (\"Last 30 days\" and \"Last month\" date range filters on all the cards are disabled)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The date range filter should be enabled and should allow users to select an available reporting period so the card data updates for the selected date range.",
+      "actual_behavior": "The \"Last month\" and \"Last 30 days\" date range filters on all the cards under the \"Business at a glance\" section are disabled, preventing users from changing the reporting period shown in the cards."
+    }
+  },
+  {
+    "criterion": "Home: The \"More actions\" menu on the \"BANK ACCOUNTS\", \"PROFIT & LOSS\", and \"EXPENSES\" cards under the \"Business at a glance\" section should be enabled to allow users to access the available card-specific actions.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Home → Scroll down → Business at a glance (section) → BANK ACCOUNTS, PROFIT & LOSS, and EXPENSES (cards) → More actions menu (three dots icon) → (Greyed out/disabled)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"More actions\" menu should be enabled on the \"BANK ACCOUNTS\", \"PROFIT & LOSS\", and \"EXPENSES\" cards and should open the available card-specific actions when selected.",
+      "actual_behavior": "The \"More actions\" menu on the \"BANK ACCOUNTS\", \"PROFIT & LOSS\", and \"EXPENSES\" cards under the \"Business at a glance\" section is disabled, preventing users from accessing the available card-specific actions."
+    }
+  },
+  {
+    "criterion": "Home: The \"Settings\" action for the \"BANK ACCOUNTS\" card under the \"Business at a glance\" section should be enabled to allow users to configure the bank account settings and its displayed information.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Home → Scroll down → Business at a glance (section) → BANK ACCOUNTS (card) → Settings (gear icon) → (Greyed out/disabled)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Settings\" action should be enabled and should open the available configuration options for the \"BANK ACCOUNTS\" card with the available bank account settings.",
+      "actual_behavior": "The \"Settings\" action for the \"BANK ACCOUNTS\" card under the \"Business at a glance\" section is disabled, preventing users from configuring the bank account settings and its displayed information."
+    }
+  },
+  {
+    "criterion": "Contact experts: The \"Contact experts\" option in the top bar should be enabled to allow users to connect with Intuit experts for assistance with bookkeeping, payroll, tax, and QuickBooks product or technical support.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Top bar → Contact experts (contacts icon) → (Not implemented)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Contact experts\" option should open the expert-support workflow, allowing users to select the type of assistance needed and request a callback or schedule an appointment with an available expert.",
+      "actual_behavior": "The \"Contact experts\" option in the top bar is disabled, preventing users from accessing the expert-support workflow."
+    }
+  },
+  {
+    "criterion": "Tasks: The \"Tasks\" option in the top bar should be enabled to allow users to review and manage QuickBooks tasks and items that require attention.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Top bar → Tasks (clipboard icon) → (Not implemented)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Tasks\" option should open the Tasks panel, where users can review actionable items such as overdue invoices, transactions requiring review, approvals, and assigned tasks.",
+      "actual_behavior": "The \"Tasks\" option in the top bar is disabled, preventing users from accessing and managing tasks that require attention."
+    }
+  },
+  {
+    "criterion": "My integrations: The \"My integrations\" option in the top bar should be enabled to allow users to view and access applications connected to QuickBooks.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Top bar → My integrations (user group icon) → (Not implemented)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"My integrations\" option should open the integrations experience and should display applications connected to the QuickBooks account.",
+      "actual_behavior": "The \"My integrations\" option in the top bar is disabled, preventing users from viewing and accessing their connected applications."
+    }
+  },
+  {
+    "criterion": "Notifications: The \"Notifications\" option in the top bar should be enabled to allow users to view QuickBooks notifications and alerts that may require their attention.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Top bar → Notifications (bell icon) → (Not implemented)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Notifications\" option should open the notifications panel and should display available account, activity, and QuickBooks alerts.",
+      "actual_behavior": "The \"Notifications\" option in the top bar is disabled, preventing users from viewing available notifications and alerts."
+    }
+  },
+  {
+    "criterion": "Help: The \"Help\" option in the top bar should be enabled to allow users to search QuickBooks help resources and access available support options.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Top bar → Help (question mark icon) → (Not implemented)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Help\" option should open the QuickBooks help experience, allowing users to search for answers, access help content, and available support resources.",
+      "actual_behavior": "The \"Help\" option in the top bar is disabled, preventing users from accessing QuickBooks help and support resources."
+    }
+  },
+  {
+    "criterion": "Customize: The \"Customize\" option in the left sidebar should be enabled to allow users to customize the navigation sidebar, including the apps and sections displayed or pinned for quick access.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Left sidebar → Customize (far bottom) → (Not implemented)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Customize\" option should be enabled and should allow users to customize the left sidebar by managing the apps and sections displayed or pinned for quick access.",
+      "actual_behavior": "The \"Customize\" option in the left sidebar is disabled, preventing users from modifying the sidebar navigation."
+    }
+  },
+  {
+    "criterion": "Invoice: The \"Add logo\" section should be enabled while creating an invoice to allow users to upload and add a company logo to the invoice for branding and identification.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Left sidebar → Create → Customers (section) → Invoice → Create INVOICE (form) → Add logo (top-right corner) → (Greyed out/disabled)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Add logo\" section should be enabled in the invoice form and should allow users to upload, preview, and apply a company logo to the invoice.",
+      "actual_behavior": "The \"Add logo\" section is disabled while creating an invoice, preventing users from adding a company logo to the invoice."
+    }
+  },
+  {
+    "criterion": "Invoice: The \"Add attachment\" section should be enabled while creating an invoice to allow users to attach supporting documents or files related to the invoice for recordkeeping and transaction reference.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Left sidebar → Create → Customers (section) → Invoice → Create INVOICE (form) → Scroll down → Add attachment (section) → (Greyed out/disabled)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Add attachment\" section should be enabled and should allow users to select and attach supported files, such as receipts, contracts, supporting documents, or other relevant records, to the invoice. ",
+      "actual_behavior": "The \"Add attachment\" section is disabled while creating an invoice, preventing users from attaching supporting documents or files to the invoice."
+    }
+  },
+  {
+    "criterion": "Invoice: The \"Edit\" action for the \"Customer payment options\" section should be enabled while creating an invoice to allow users to choose which payment methods are available to the customer for paying the invoice.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Left sidebar → Create → Customers (section) → Invoice → Create INVOICE (form) → Customer payment options (section) → Edit (action) → (Greyed out/disabled)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Edit\" action should be enabled and should allow users to configure the customer payment methods available for the invoice, such as card payments and bank payments.",
+      "actual_behavior": "The \"Edit\" action for the \"Customer payment options\" section is disabled while creating an invoice, preventing users from changing the available payment methods."
+    }
+  },
+  {
+    "criterion": "Invoice: The \"Recurring settings\" form is not fully accessible when opened while creating an invoice, preventing users from scrolling through the recurring settings and accessing the bottom actions.",
+    "score": 10,
+    "tags": [
+      "bug"
+    ],
+    "forms": {
+      "page_or_workflow": "Left sidebar → Create → Customers (section) → Invoice → Create INVOICE (form) → Manage recurring (bottom-left corner) → Recurring settings (form, right side) → Scroll through the form (not working) → (Form not fully accessible and bottom actions cropped from bottom)",
+      "reproduction_steps": "1. Go to Left sidebar → Create → Customers (section).\n2. Click on the \"Invoice\" option to create a new invoice.\n3. Click on the \"Manage recurring\" button in the bottom-left corner to open the \"Recurring settings\" form.\n4. Scroll through the \"Recurring settings\" form and observe that the scrolling is stuck and it's not working.\n5. Observe that the \"Recurring settings\" form is not fully accessible when opened while creating an invoice, preventing users from scrolling through the recurring settings and accessing the bottom actions.",
+      "expected_behavior": "The \"Recurring settings\" form should fit within the available viewport or provide vertical scrolling so users can access all recurring settings and the bottom action button \"Save template\".",
+      "actual_behavior": "The \"Recurring settings\" form extends beyond the visible viewport, causing the bottom portion of the form and its action area to be cropped. The form cannot be scrolled, preventing users from accessing all recurring settings and actions."
+    }
+  },
+  {
+    "criterion": "Reports: The \"Download\" option should be enabled for a report to allow users to download or export the generated report for offline use, sharing, or recordkeeping.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Left sidebar → Reports → \"Profit and Loss\" (report) → Download (top-right corner) → (Not implemented)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Download\" option should be enabled and should allow users to download the generated report in an available supported format.",
+      "actual_behavior": "The \"Download\" option is disabled for a report, preventing users from downloading or exporting the generated report for offline use, sharing, or recordkeeping."
+    }
+  },
+  {
+    "criterion": "Reports: The \"Filters\" option should be enabled for a report to allow users to refine the generated report by applying the available report criteria filters and displaying the filtered financial data.",
+    "score": 10,
+    "tags": [
+      "feature request"
+    ],
+    "forms": {
+      "page_or_workflow": "Left sidebar → Reports → \"Profit and Loss\" (report) → Filters (top-right corner) → (Not implemented)",
+      "reproduction_steps": "N/A",
+      "expected_behavior": "The \"Filters\" option should be enabled and should open the available filtering controls for a report so users can adjust the report based on the supported criteria.",
+      "actual_behavior": "The \"Filters\" option is disabled for a report, preventing users from refining the generated report by applying the available report criteria filters and displaying the filtered financial data."
+    }
+  }
+]

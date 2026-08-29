@@ -14,18 +14,18 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://rhea-review-lab.aman-codes0.chatgpt.site'),
-  title: 'Rhea Review - Prompt & Rubric QA',
+  title: 'Rhea CheckSet - Documentation-grounded Rubric QA',
   description:
-    'Evaluate prompt clarity, rubric quality, alignment, complexity, and consistency with exact corrections.',
+    'Validate rubric batches, tags, reproduction steps, grammar, and product-documentation alignment.',
   openGraph: {
-    title: 'Rhea Review',
-    description: 'Prompt and rubric quality lab',
-    images: [{ url: '/og.png', width: 1731, height: 909 }],
+    title: 'Rhea CheckSet',
+    description: 'Validate rubric batches against product documentation',
+    images: [{ url: '/og.png', width: 1200, height: 630 }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Rhea Review',
-    description: 'Prompt and rubric quality lab',
+    title: 'Rhea CheckSet',
+    description: 'Validate rubric batches against product documentation',
     images: ['/og.png'],
   },
 };

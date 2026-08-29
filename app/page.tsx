@@ -3,858 +3,850 @@
 import { useMemo, useState } from 'react';
 import {
   AlertTriangle,
-  ArrowRight,
-  BookOpenCheck,
-  BrainCircuit,
+  BadgeCheck,
+  BookOpen,
+  Bot,
+  Braces,
   Check,
   CheckCircle2,
-  CircleHelp,
+  CircleAlert,
   Copy,
-  FileCheck2,
-  Layers3,
-  Link2,
-  ListChecks,
+  ExternalLink,
+  FileJson2,
   Loader2,
   Play,
   RefreshCcw,
+  Search,
   ShieldCheck,
   Sparkles,
-  Target,
-  WandSparkles,
+  XCircle,
 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 
-const EXAMPLE_PROMPT = `Find the relevant candidate files for Tyler and Nathan. Compare their experience, determine which candidate progressed further in the hiring process, and recommend who should be prioritized.`;
+type BatchKey = 'a' | 'b' | 'c';
+type IssueSeverity = 'error' | 'warning';
+type AiStatus = 'idle' | 'researching' | 'ready' | 'unavailable';
 
-const EXAMPLE_RUBRICS = `1. Locates the correct candidate files.
-2. Calculates the total years of experience for each candidate.
-3. Identifies Tyler as having more experience and determines that Nathan progressed further in the interview process.
-4. Provides a clear, high-quality recommendation.
-5. Does not include irrelevant candidate information.`;
-
-type Severity = 'High' | 'Medium' | 'Low';
-type Tab = 'findings' | 'alignment' | 'revision';
-
-type Finding = {
-  id: string;
-  severity: Severity;
-  category: string;
-  title: string;
-  detail: string;
-  fix: string;
-};
-
-type Alignment = {
-  id: string;
-  requirement: string;
-  rubricIds: string[];
-  status: 'Covered' | 'Partial' | 'Missing';
-};
-
-type Analysis = {
-  overall: number;
-  scores: {
-    prompt: number;
-    rubrics: number;
-    alignment: number;
-    complexity: number;
+type RubricRecord = {
+  criterion: string;
+  score: number | null;
+  tags: string[];
+  forms: {
+    page_or_workflow: string;
+    reproduction_steps: string;
+    expected_behavior: string;
+    actual_behavior: string;
   };
-  findings: Finding[];
-  alignments: Alignment[];
-  revisedPrompt: string;
-  revisedRubrics: string;
-  rubricCount: number;
 };
 
-const ACTION_VERBS = [
-  'find',
-  'locate',
-  'compare',
-  'calculate',
-  'determine',
-  'recommend',
-  'identify',
-  'analyze',
-  'summarize',
-  'evaluate',
-  'rank',
-  'provide',
-  'create',
-  'write',
-];
+type Issue = {
+  field: string;
+  severity: IssueSeverity;
+  message: string;
+  suggestion: string;
+};
 
-const RUBRIC_VERBS = [
-  'locates',
-  'finds',
-  'compares',
-  'calculates',
-  'determines',
-  'recommends',
-  'identifies',
-  'analyzes',
-  'summarizes',
-  'evaluates',
-  'ranks',
-  'provides',
-  'explains',
-  'verifies',
-];
+type RubricResult = {
+  index: number;
+  rubric: RubricRecord;
+  issues: Issue[];
+};
 
-const STOP_WORDS = new Set([
-  'the', 'a', 'an', 'and', 'or', 'for', 'of', 'to', 'in', 'on', 'with', 'their',
-  'each', 'that', 'which', 'who', 'should', 'be', 'is', 'as', 'correct', 'correctly',
-]);
+type BatchSummary = {
+  total: number;
+  bugs: number;
+  features: number;
+  rest: number;
+  validSingleTags: number;
+  checks: Array<{
+    label: string;
+    current: number;
+    target: number;
+    pass: boolean;
+    detail: string;
+  }>;
+};
 
-function parseRubrics(text: string) {
-  return text
+type AiReview = {
+  index: number;
+  documentationStatus: 'supported' | 'unclear' | 'not_found';
+  documentationSummary: string;
+  grammarIssues: string[];
+  suggestions: string[];
+};
+
+type AiResponse = {
+  applicationBrief: string;
+  rubricReviews: AiReview[];
+  sources: Array<{ title: string; url: string }>;
+};
+
+const BATCHES: Record<
+  BatchKey,
+  { label: string; total: number; bugs: number; features: number; rest: number }
+> = {
+  a: { label: 'Batch A · 20 rubrics', total: 20, bugs: 5, features: 10, rest: 5 },
+  b: { label: 'Batch B · 20 rubrics', total: 20, bugs: 3, features: 3, rest: 14 },
+  c: { label: 'Batch C · 10 rubrics', total: 10, bugs: 3, features: 3, rest: 4 },
+};
+
+const VALID_TAGS = new Set(['bug', 'feature request']);
+
+function readString(value: unknown) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+function normalizeRubric(value: unknown): RubricRecord {
+  const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const formsValue =
+    record.forms && typeof record.forms === 'object'
+      ? (record.forms as Record<string, unknown>)
+      : {};
+  const tags = Array.isArray(record.tags)
+    ? record.tags.filter((tag): tag is string => typeof tag === 'string').map((tag) => tag.trim())
+    : [];
+
+  return {
+    criterion: readString(record.criterion),
+    score: typeof record.score === 'number' && Number.isFinite(record.score) ? record.score : null,
+    tags,
+    forms: {
+      page_or_workflow: readString(formsValue.page_or_workflow),
+      reproduction_steps: readString(formsValue.reproduction_steps),
+      expected_behavior: readString(formsValue.expected_behavior),
+      actual_behavior: readString(formsValue.actual_behavior),
+    },
+  };
+}
+
+function validateOrderedSteps(value: string) {
+  const lines = value
     .split('\n')
     .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line, index) => ({
-      id: `R${index + 1}`,
-      text: line.replace(/^\s*(?:\d+[.)]|[-*])\s*/, '').trim(),
-    }));
+    .filter(Boolean);
+
+  if (!lines.length) return false;
+
+  return lines.every((line, index) => {
+    const match = line.match(/^(\d+)[.)]\s+\S/);
+    return Boolean(match) && Number(match?.[1]) === index + 1;
+  });
 }
-function extractRequirements(text: string) {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  const pieces = normalized
-    .split(/(?<=[.!?])\s+|,\s+|\s+and\s+/i)
-    .map((piece) => piece.replace(/^[.\s]+|[.\s]+$/g, ''))
-    .filter((piece) => {
-      const lower = piece.toLowerCase();
-      return ACTION_VERBS.some((verb) => new RegExp(`\\b${verb}\\w*\\b`).test(lower));
+
+function validateRubric(rubric: RubricRecord): Issue[] {
+  const issues: Issue[] = [];
+  const tag = rubric.tags[0]?.toLowerCase();
+
+  if (!rubric.criterion) {
+    issues.push({
+      field: 'criterion',
+      severity: 'error',
+      message: 'Criterion is missing.',
+      suggestion: 'Add a specific, observable criterion.',
     });
-
-  return (pieces.length ? pieces : [normalized || 'No explicit requirement found']).map(
-    (requirement, index) => ({ id: `P${index + 1}`, requirement }),
-  );
-}
-
-function keywords(text: string) {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter((word) => word.length > 3 && !STOP_WORDS.has(word));
-}
-
-function buildRevision(prompt: string, rubrics: ReturnType<typeof parseRubrics>) {
-  const promptLower = prompt.toLowerCase();
-  const rubricCalculation = rubrics.some((rubric) =>
-    /\b(calculate|calculates|percentage|total years|total amount)\b/i.test(rubric.text),
-  );
-  const promptCalculation = /\b(calculate|percentage|total years|total amount)\b/i.test(promptLower);
-
-  let revisedPrompt = prompt.trim();
-  if (rubricCalculation && !promptCalculation) {
-    revisedPrompt += `${/[.!?]$/.test(revisedPrompt) ? '' : '.'} Calculate the total years of experience for each candidate.`;
+  } else if (!/^[A-Z][^:\n]{0,80}:\s+\S/.test(rubric.criterion)) {
+    issues.push({
+      field: 'criterion',
+      severity: 'error',
+      message: 'Criterion must start with a capitalized section followed by a colon.',
+      suggestion: 'Use a prefix such as “Home:” or “Account Settings:”.',
+    });
   }
 
-  const revised: string[] = [];
-  rubrics.forEach((rubric) => {
-    const text = rubric.text;
-    const lower = text.toLowerCase();
-    const verbCount = RUBRIC_VERBS.filter((verb) =>
-      new RegExp(`\\b${verb}\\w*\\b`).test(lower),
-    ).length;
+  if (rubric.score === null) {
+    issues.push({
+      field: 'score',
+      severity: 'warning',
+      message: 'Score is missing or is not numeric.',
+      suggestion: 'Provide a numeric score for this rubric.',
+    });
+  }
 
-    if (lower.includes(' and ') && verbCount >= 2) {
-      const parts = text.split(/\s+and\s+/i).filter(Boolean);
-      revised.push(...parts.map((part) => `${part.replace(/^[a-z]/, (char) => char.toUpperCase()).replace(/[.]$/, '')}.`));
-      return;
+  if (rubric.tags.length !== 1) {
+    issues.push({
+      field: 'tags',
+      severity: 'error',
+      message: 'Every rubric must have exactly one tag.',
+      suggestion: 'Use either ["bug"] or ["feature request"].',
+    });
+  } else if (!VALID_TAGS.has(tag)) {
+    issues.push({
+      field: 'tags',
+      severity: 'error',
+      message: 'The tag is not valid.',
+      suggestion: 'Use “bug” for bugs or “feature request” for feature requests.',
+    });
+  }
+
+  const requiredFields: Array<[keyof RubricRecord['forms'], string]> = [
+    ['page_or_workflow', 'Page or workflow'],
+    ['reproduction_steps', 'Reproduction steps'],
+    ['expected_behavior', 'Expected behavior'],
+    ['actual_behavior', 'Actual behavior'],
+  ];
+
+  requiredFields.forEach(([field, label]) => {
+    if (!rubric.forms[field]) {
+      issues.push({
+        field,
+        severity: 'error',
+        message: label + ' is missing.',
+        suggestion: 'Add a specific value for ' + label.toLowerCase() + '.',
+      });
     }
-
-    let improved = text
-      .replace(/clear,?\s*high-quality/gi, 'evidence-backed')
-      .replace(/\bhigh-quality\b/gi, 'evidence-backed')
-      .replace(/^Does not include irrelevant candidate information\.?$/i, 'Includes only candidate information that supports the requested comparison.');
-    if (!/[.!?]$/.test(improved)) improved += '.';
-    revised.push(improved);
   });
 
+  if (tag === 'bug' && rubric.forms.reproduction_steps && !validateOrderedSteps(rubric.forms.reproduction_steps)) {
+    issues.push({
+      field: 'reproduction_steps',
+      severity: 'error',
+      message: 'Bug reproduction steps must be an uninterrupted ordered list starting at 1.',
+      suggestion: 'Use 1., 2., 3. and continue without skipped or repeated numbers.',
+    });
+  }
+
+  if (
+    tag === 'feature request' &&
+    rubric.forms.reproduction_steps &&
+    rubric.forms.reproduction_steps.toUpperCase() !== 'N/A'
+  ) {
+    issues.push({
+      field: 'reproduction_steps',
+      severity: 'error',
+      message: 'Feature-request reproduction steps must be N/A.',
+      suggestion: 'Set reproduction_steps to exactly “N/A”.',
+    });
+  }
+
+  if (rubric.forms.expected_behavior && rubric.forms.expected_behavior.length < 28) {
+    issues.push({
+      field: 'expected_behavior',
+      severity: 'warning',
+      message: 'Expected behavior may be too generic.',
+      suggestion: 'Describe the user action, the expected system response, and the observable outcome.',
+    });
+  }
+
+  if (rubric.forms.actual_behavior && rubric.forms.actual_behavior.length < 28) {
+    issues.push({
+      field: 'actual_behavior',
+      severity: 'warning',
+      message: 'Actual behavior may be too generic.',
+      suggestion: 'Describe what actually happens and how it differs from the expectation.',
+    });
+  }
+
+  return issues;
+}
+
+function buildBatchSummary(rubrics: RubricRecord[], key: BatchKey): BatchSummary {
+  const requirement = BATCHES[key];
+  const bugs = rubrics.filter(
+    (rubric) => rubric.tags.length === 1 && rubric.tags[0].toLowerCase() === 'bug',
+  ).length;
+  const features = rubrics.filter(
+    (rubric) =>
+      rubric.tags.length === 1 && rubric.tags[0].toLowerCase() === 'feature request',
+  ).length;
+  const validSingleTags = rubrics.filter(
+    (rubric) =>
+      rubric.tags.length === 1 && VALID_TAGS.has(rubric.tags[0].toLowerCase()),
+  ).length;
+  const rest = Math.max(
+    0,
+    validSingleTags - Math.min(bugs, requirement.bugs) - Math.min(features, requirement.features),
+  );
+
   return {
-    revisedPrompt,
-    revisedRubrics: revised.map((rubric, index) => `${index + 1}. ${rubric}`).join('\n'),
+    total: rubrics.length,
+    bugs,
+    features,
+    rest,
+    validSingleTags,
+    checks: [
+      {
+        label: 'Rubrics',
+        current: rubrics.length,
+        target: requirement.total,
+        pass: rubrics.length === requirement.total,
+        detail: 'Exactly ' + requirement.total + ' required',
+      },
+      {
+        label: 'Bugs',
+        current: bugs,
+        target: requirement.bugs,
+        pass: bugs >= requirement.bugs,
+        detail: requirement.bugs + ' minimum',
+      },
+      {
+        label: 'Feature requests',
+        current: features,
+        target: requirement.features,
+        pass: features >= requirement.features,
+        detail: requirement.features + ' minimum',
+      },
+      {
+        label: 'Rest bugs or features',
+        current: rest,
+        target: requirement.rest,
+        pass: rest >= requirement.rest,
+        detail: requirement.rest + ' minimum',
+      },
+      {
+        label: 'Valid single tags',
+        current: validSingleTags,
+        target: rubrics.length,
+        pass: validSingleTags === rubrics.length,
+        detail: 'One valid tag per rubric',
+      },
+    ],
   };
 }
 
-function evaluateTask(prompt: string, rubricText: string): Analysis {
-  const rubrics = parseRubrics(rubricText);
-  const requirements = extractRequirements(prompt);
-  const findings: Finding[] = [];
-  const promptLower = prompt.toLowerCase();
-
-  const rubricCalculation = rubrics.find((rubric) =>
-    /\b(calculate|calculates|percentage|total years|total amount)\b/i.test(rubric.text),
-  );
-  const promptCalculation = /\b(calculate|percentage|total years|total amount)\b/i.test(promptLower);
-
-  if (rubricCalculation && !promptCalculation) {
-    findings.push({
-      id: 'unsupported-calculation',
-      severity: 'High',
-      category: 'Alignment',
-      title: `${rubricCalculation.id} evaluates an unrequested calculation`,
-      detail: `“${rubricCalculation.text}” requires a derived result that the prompt never explicitly requests.`,
-      fix: 'Add the calculation to the prompt, or remove it from the rubric.',
-    });
-  }
-
-  rubrics.forEach((rubric) => {
-    const lower = rubric.text.toLowerCase();
-    const verbCount = RUBRIC_VERBS.filter((verb) =>
-      new RegExp(`\\b${verb}\\w*\\b`).test(lower),
-    ).length;
-
-    if (lower.includes(' and ') && verbCount >= 2) {
-      findings.push({
-        id: `stacked-${rubric.id}`,
-        severity: 'High',
-        category: 'Rubric quality',
-        title: `${rubric.id} contains multiple gradable outcomes`,
-        detail: 'One part can pass while the other fails, making the criterion difficult to grade consistently.',
-        fix: 'Split the criterion so that each rubric checks exactly one observable outcome.',
-      });
-    }
-
-    if (/\b(high-quality|good|appropriate|excellent|comprehensive)\b/i.test(rubric.text)) {
-      findings.push({
-        id: `vague-${rubric.id}`,
-        severity: 'Medium',
-        category: 'Rubric quality',
-        title: `${rubric.id} uses a subjective quality label`,
-        detail: 'The criterion does not identify the evidence or observable result required to pass.',
-        fix: 'Replace the subjective label with a specific, verifiable outcome.',
-      });
-    }
-
-    if (/^(does not|avoids|without|no\s)/i.test(rubric.text)) {
-      findings.push({
-        id: `negative-${rubric.id}`,
-        severity: 'Low',
-        category: 'Rubric quality',
-        title: `${rubric.id} is written as a negative criterion`,
-        detail: 'Absence-based criteria can be ambiguous because they do not describe the desired observable output.',
-        fix: 'Rewrite it positively so the grader can verify what the response should contain.',
-      });
-    }
-  });
-
-  if (!prompt.trim()) {
-    findings.unshift({
-      id: 'empty-prompt',
-      severity: 'High',
-      category: 'Prompt quality',
-      title: 'The prompt is empty',
-      detail: 'There is no task for the agent to complete or for the rubrics to evaluate.',
-      fix: 'Add the user goal, relevant context, constraints, and expected deliverable.',
-    });
-  }
-
-  if (!rubrics.length) {
-    findings.unshift({
-      id: 'empty-rubrics',
-      severity: 'High',
-      category: 'Rubric quality',
-      title: 'No rubric criteria were provided',
-      detail: 'The task cannot be graded consistently without explicit success criteria.',
-      fix: 'Add atomic, independently verifiable rubric criteria.',
-    });
-  }
-
-  const alignments: Alignment[] = requirements.map((requirement) => {
-    const requirementWords = keywords(requirement.requirement);
-    const matches = rubrics.filter((rubric) => {
-      const rubricWords = new Set(keywords(rubric.text));
-      return requirementWords.some((word) => rubricWords.has(word));
-    });
-    const isCalculationGap =
-      /compare.*experience/i.test(requirement.requirement) && Boolean(rubricCalculation) && !promptCalculation;
-    return {
-      ...requirement,
-      rubricIds: matches.map((match) => match.id),
-      status: matches.length === 0 ? 'Missing' : isCalculationGap ? 'Partial' : 'Covered',
-    };
-  });
-
-  alignments
-    .filter((alignment) => alignment.status === 'Missing')
-    .slice(0, 1)
-    .forEach((alignment) => {
-      findings.push({
-        id: `missing-${alignment.id}`,
-        severity: 'High',
-        category: 'Alignment',
-        title: `${alignment.id} is not evaluated by any rubric`,
-        detail: `The prompt asks to “${alignment.requirement},” but no criterion checks the outcome.`,
-        fix: 'Add an atomic rubric criterion that evaluates this requirement.',
-      });
-    });
-
-  const stackedCount = findings.filter((finding) => finding.id.startsWith('stacked-')).length;
-  const vagueCount = findings.filter((finding) => finding.id.startsWith('vague-')).length;
-  const negativeCount = findings.filter((finding) => finding.id.startsWith('negative-')).length;
-  const missingCount = alignments.filter((alignment) => alignment.status === 'Missing').length;
-
-  const promptScore = Math.max(25, 92 - (!prompt.trim() ? 60 : 0) - missingCount * 6);
-  const rubricScore = Math.max(20, 96 - stackedCount * 14 - vagueCount * 10 - negativeCount * 6 - (!rubrics.length ? 60 : 0));
-  const alignmentScore = Math.max(20, 96 - (rubricCalculation && !promptCalculation ? 26 : 0) - missingCount * 18);
-  const complexitySignals = [
-    /\b(compare|rank)\b/i.test(prompt),
-    /\b(file|document|source|record)s?\b/i.test(prompt),
-    /\b(calculate|percentage|total)\b/i.test(prompt),
-    /\b(determine|recommend|evaluate|analyze)\b/i.test(prompt),
-    requirements.length >= 3,
-  ].filter(Boolean).length;
-  const complexityScore = Math.min(92, 48 + complexitySignals * 8);
-  const overall = Math.round(
-    promptScore * 0.2 + rubricScore * 0.3 + alignmentScore * 0.35 + complexityScore * 0.15,
-  );
-  const revision = buildRevision(prompt, rubrics);
-
-  return {
-    overall,
-    scores: {
-      prompt: promptScore,
-      rubrics: rubricScore,
-      alignment: alignmentScore,
-      complexity: complexityScore,
-    },
-    findings,
-    alignments,
-    ...revision,
-    rubricCount: rubrics.length,
-  };
+function parseInput(value: string) {
+  const parsed: unknown = JSON.parse(value);
+  if (!Array.isArray(parsed)) throw new Error('The top-level JSON value must be an array.');
+  return parsed.map(normalizeRubric);
 }
 
-function severityVariant(severity: Severity) {
-  if (severity === 'High') return 'destructive' as const;
-  if (severity === 'Medium') return 'secondary' as const;
-  return 'outline' as const;
+function docsBadge(status: AiReview['documentationStatus']) {
+  if (status === 'supported') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
+  if (status === 'not_found') return 'border-rose-500/30 bg-rose-500/10 text-rose-300';
+  return 'border-amber-500/30 bg-amber-500/10 text-amber-300';
 }
-
-function findingIcon(category: string) {
-  if (category === 'Alignment') return Target;
-  if (category === 'Prompt quality') return CircleHelp;
-  return Layers3;
-}
-
-const RULES = [
-  {
-    icon: CircleHelp,
-    title: 'Prompt quality',
-    copy: 'Checks clarity, missing context, ambiguity, deliverables, constraints, and realism.',
-    example: 'A clear task states what to produce and what evidence to use.',
-  },
-  {
-    icon: ListChecks,
-    title: 'Rubric atomicity',
-    copy: 'Finds stacked criteria that combine outcomes which could pass or fail independently.',
-    example: 'One rubric criterion should test one observable result.',
-  },
-  {
-    icon: Link2,
-    title: 'Prompt ↔ rubric alignment',
-    copy: 'Maps every requested outcome to a criterion and flags rubric-only expectations.',
-    example: 'No hidden calculations and no unevaluated requirements.',
-  },
-  {
-    icon: ShieldCheck,
-    title: 'Verifiability',
-    copy: 'Replaces vague quality labels with outcomes a grader can consistently judge.',
-    example: 'Prefer “cites two sources” over “provides a good answer.”',
-  },
-  {
-    icon: BrainCircuit,
-    title: 'Genuine complexity',
-    copy: 'Recognizes discovery, cross-referencing, synthesis, interpretation, and calculation.',
-    example: 'Long wording alone does not make a task complex.',
-  },
-  {
-    icon: BookOpenCheck,
-    title: 'Consistency',
-    copy: 'Looks for contradictions, duplicate criteria, unsupported answers, and negative checks.',
-    example: 'Expected answers must be supported by the prompt and source material.',
-  },
-];
 
 export default function Home() {
-  const [prompt, setPrompt] = useState('');
-  const [rubrics, setRubrics] = useState('');
-  const [analysis, setAnalysis] = useState(() => evaluateTask('', ''));
-  const [activeTab, setActiveTab] = useState<Tab>('findings');
-  const [showRulebook, setShowRulebook] = useState(false);
+  const [application, setApplication] = useState('quickbooks-angular');
+  const [batchKey, setBatchKey] = useState<BatchKey>('a');
+  const [jsonInput, setJsonInput] = useState('');
+  const [parseError, setParseError] = useState('');
+  const [results, setResults] = useState<RubricResult[]>([]);
+  const [batchSummary, setBatchSummary] = useState<BatchSummary | null>(null);
+  const [aiStatus, setAiStatus] = useState<AiStatus>('idle');
+  const [aiResponse, setAiResponse] = useState<AiResponse | null>(null);
+  const [aiError, setAiError] = useState('');
   const [isRunning, setIsRunning] = useState(false);
-  const [notice, setNotice] = useState('');
-  const [hasReview, setHasReview] = useState(false);
-  const [fieldErrors, setFieldErrors] = useState({ prompt: false, rubrics: false });
+  const [copied, setCopied] = useState(false);
 
-  const wordCount = useMemo(() => prompt.trim().split(/\s+/).filter(Boolean).length, [prompt]);
-  const rubricCount = useMemo(() => parseRubrics(rubrics).length, [rubrics]);
-  const canRunReview = Boolean(prompt.trim() && rubrics.trim());
-  const highCount = analysis.findings.filter((finding) => finding.severity === 'High').length;
+  const issueCount = useMemo(
+    () => results.reduce((total, result) => total + result.issues.length, 0),
+    [results],
+  );
+  const failingRubrics = useMemo(
+    () => results.filter((result) => result.issues.some((issue) => issue.severity === 'error')).length,
+    [results],
+  );
+  const selectedBatch = BATCHES[batchKey];
+  const canValidate = Boolean(application && jsonInput.trim() && !isRunning);
 
-  function runReview() {
-    const errors = {
-      prompt: !prompt.trim(),
-      rubrics: !rubrics.trim(),
-    };
+  async function loadProvidedExample() {
+    const response = await fetch('/sample-rubrics.json');
+    const text = await response.text();
+    setJsonInput(text);
+    setParseError('');
+    setResults([]);
+    setBatchSummary(null);
+    setAiResponse(null);
+    setAiStatus('idle');
+    setAiError('');
+  }
 
-    if (errors.prompt || errors.rubrics) {
-      setFieldErrors(errors);
-      setNotice('Complete the required fields');
-      window.setTimeout(() => setNotice(''), 1800);
-      window.requestAnimationFrame(() => {
-        document.getElementById(errors.prompt ? 'prompt-input' : 'rubrics-input')?.focus();
-      });
+  function reset() {
+    setJsonInput('');
+    setParseError('');
+    setResults([]);
+    setBatchSummary(null);
+    setAiResponse(null);
+    setAiStatus('idle');
+    setAiError('');
+  }
+
+  async function runValidation() {
+    setParseError('');
+    setAiError('');
+    setAiResponse(null);
+
+    let rubrics: RubricRecord[];
+    try {
+      rubrics = parseInput(jsonInput);
+    } catch (error) {
+      setParseError(error instanceof Error ? error.message : 'The JSON could not be parsed.');
       return;
     }
 
-    setFieldErrors({ prompt: false, rubrics: false });
-    setIsRunning(true);
-    setNotice('');
-    window.setTimeout(() => {
-      setAnalysis(evaluateTask(prompt, rubrics));
-      setActiveTab('findings');
-      setHasReview(true);
-      setIsRunning(false);
-      setNotice('Review complete');
-      window.setTimeout(() => setNotice(''), 1800);
-    }, 650);
-  }
+    const localResults = rubrics.map((rubric, index) => ({
+      index,
+      rubric,
+      issues: validateRubric(rubric),
+    }));
 
-  async function copyText(text: string, message: string) {
+    setResults(localResults);
+    setBatchSummary(buildBatchSummary(rubrics, batchKey));
+    setIsRunning(true);
+    setAiStatus('researching');
+
     try {
-      await navigator.clipboard.writeText(text);
-      setNotice(message);
-      window.setTimeout(() => setNotice(''), 1800);
-    } catch {
-      setNotice('Copy is unavailable in this preview');
+      const response = await fetch('/api/validate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          application,
+          batch: batchKey,
+          rubrics,
+        }),
+      });
+      const payload = (await response.json()) as AiResponse & { error?: string };
+
+      if (!response.ok) {
+        throw new Error(payload.error || 'AI documentation review is unavailable.');
+      }
+
+      setAiResponse(payload);
+      setAiStatus('ready');
+    } catch (error) {
+      setAiStatus('unavailable');
+      setAiError(
+        error instanceof Error
+          ? error.message
+          : 'AI documentation review is unavailable. Local validation still completed.',
+      );
+    } finally {
+      setIsRunning(false);
     }
   }
 
-  function applyRevision() {
-    setPrompt(analysis.revisedPrompt);
-    setRubrics(analysis.revisedRubrics);
-    const revised = evaluateTask(analysis.revisedPrompt, analysis.revisedRubrics);
-    setAnalysis(revised);
-    setActiveTab('findings');
-    setNotice('Improved version applied');
-    window.setTimeout(() => setNotice(''), 1800);
+  async function copyReport() {
+    const report = JSON.stringify(
+      {
+        application,
+        batch: batchKey,
+        batchSummary,
+        localResults: results,
+        aiReview: aiResponse,
+      },
+      null,
+      2,
+    );
+    await navigator.clipboard.writeText(report);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
   }
-
-  function resetFields() {
-    setPrompt('');
-    setRubrics('');
-    setAnalysis(evaluateTask('', ''));
-    setActiveTab('findings');
-    setHasReview(false);
-    setFieldErrors({ prompt: false, rubrics: false });
-    setNotice('Fields cleared');
-    window.setTimeout(() => setNotice(''), 1800);
-  }
-
-  function loadExample() {
-    setPrompt(EXAMPLE_PROMPT);
-    setRubrics(EXAMPLE_RUBRICS);
-    setAnalysis(evaluateTask(EXAMPLE_PROMPT, EXAMPLE_RUBRICS));
-    setActiveTab('findings');
-    setHasReview(true);
-    setFieldErrors({ prompt: false, rubrics: false });
-    setNotice('Example loaded');
-    window.setTimeout(() => setNotice(''), 1800);
-  }
-
-  const reportText = [
-    `Rhea Review score: ${analysis.overall}/100`,
-    '',
-    ...analysis.findings.flatMap((finding, index) => [
-      `${index + 1}. [${finding.severity}] ${finding.title}`,
-      finding.detail,
-      `Fix: ${finding.fix}`,
-      '',
-    ]),
-  ].join('\n');
 
   return (
-    <main className="min-h-screen px-3 py-3 text-foreground sm:px-5 sm:py-5 lg:px-8">
-      <div className="mx-auto max-w-[1560px] overflow-hidden rounded-[24px] border border-border/80 bg-card shadow-[0_24px_80px_rgba(24,47,43,0.11)]">
-        <header className="flex min-h-16 items-center justify-between gap-4 border-b border-border px-4 sm:px-7">
-          <button
-            className="flex min-w-0 items-center gap-3 rounded-xl text-left outline-none focus-visible:ring-3 focus-visible:ring-ring/40"
-            onClick={() => setShowRulebook(false)}
-          >
-            <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
-              <Sparkles className="size-[18px]" />
+    <main className="min-h-screen bg-[#07090b] text-[#f5f7f6]">
+      <header className="border-b border-white/8 bg-[#090b0d]/95">
+        <div className="mx-auto flex min-h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6">
+          <div className="flex items-center gap-3">
+            <span className="grid size-9 place-items-center rounded-xl bg-emerald-400 text-[#06251a] shadow-[0_0_28px_rgba(52,211,153,0.24)]">
+              <Braces className="size-[18px]" />
             </span>
-            <span className="min-w-0">
-              <span className="flex items-center gap-2">
-                <strong className="truncate text-[15px] tracking-tight">Rhea Review</strong>
-                <Badge className="bg-accent text-accent-foreground">AI QA</Badge>
-              </span>
-              <span className="block truncate text-xs text-muted-foreground">Prompt and rubric quality lab</span>
-            </span>
-          </button>
-
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              className="hidden sm:inline-flex"
-              onClick={() => setShowRulebook((current) => !current)}
-            >
-              {showRulebook ? <ArrowRight className="rotate-180" /> : <FileCheck2 />}
-              {showRulebook ? 'Back to review' : 'Rulebook'}
-            </Button>
-            {!showRulebook && (
-              <Button className="h-9 bg-primary px-4" onClick={runReview} disabled={isRunning || !canRunReview}>
-                {isRunning ? <Loader2 className="animate-spin" /> : <Play />}
-                {isRunning ? 'Reviewing…' : 'Run review'}
-              </Button>
-            )}
+            <div>
+              <strong className="block text-sm tracking-tight">Rhea CheckSet</strong>
+              <span className="block text-xs text-zinc-500">Documentation-grounded rubric QA</span>
+            </div>
           </div>
-        </header>
+          <Badge className="border border-emerald-400/25 bg-emerald-400/10 text-emerald-300">
+            <Sparkles className="size-3" /> OpenAI assisted
+          </Badge>
+        </div>
+      </header>
 
-        {showRulebook ? (
-          <section className="min-h-[calc(100vh-114px)] bg-[#fbfaf6] p-5 sm:p-8 lg:p-10">
-            <div className="mx-auto max-w-6xl">
-              <div className="flex flex-col gap-4 border-b border-border pb-7 sm:flex-row sm:items-end sm:justify-between">
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:py-12">
+        <nav className="inline-flex rounded-xl border border-white/10 bg-white/[0.025] p-1 text-xs text-zinc-500">
+          <span className="rounded-lg px-4 py-2">AppSet: Prompt & Rubric Review</span>
+          <span className="rounded-lg bg-emerald-400 px-4 py-2 font-semibold text-[#06251a]">
+            CheckSet: Validate Tasks
+          </span>
+        </nav>
+
+        <section className="mt-8 max-w-3xl">
+          <p className="font-mono text-xs font-semibold uppercase tracking-[0.22em] text-emerald-300">
+            Nexus / CheckSet
+          </p>
+          <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">
+            Validate quickbooks-angular rubrics
+          </h1>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-400">
+            Check batch requirements, JSON structure, tags, section prefixes, reproduction steps,
+            grammar, specificity, and alignment with current QuickBooks documentation.
+          </p>
+        </section>
+
+        <div className="mt-7 grid gap-6 xl:grid-cols-[minmax(0,1.05fr)_minmax(390px,0.75fr)]">
+          <section className="space-y-5">
+            <div className="rounded-2xl border border-indigo-400/20 bg-indigo-400/[0.045] p-4">
+              <div className="flex gap-3">
+                <BookOpen className="mt-0.5 size-4 shrink-0 text-indigo-300" />
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Evaluation policy</p>
-                  <h2 className="mt-2 text-3xl font-semibold tracking-[-0.035em]">The Rhea rulebook</h2>
-                  <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                    Every review applies the same observable checks so prompt authors and graders can reproduce the result.
+                  <p className="text-sm font-medium text-indigo-100">
+                    Documentation context is prepared before every AI review.
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-zinc-400">
+                    Rhea retrieves current product documentation at review time. It does not retrain
+                    the model or store a new model.
                   </p>
                 </div>
-                <Badge variant="outline" className="w-fit bg-white px-3 py-1">6 evaluator families</Badge>
-              </div>
-
-              <div className="mt-7 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {RULES.map((rule, index) => {
-                  const Icon = rule.icon;
-                  return (
-                    <article key={rule.title} className="rounded-2xl border border-border bg-white p-5 shadow-sm">
-                      <div className="flex items-center justify-between">
-                        <span className="grid size-10 place-items-center rounded-xl bg-primary/[0.08] text-primary">
-                          <Icon className="size-[18px]" />
-                        </span>
-                        <span className="font-mono text-xs text-muted-foreground">0{index + 1}</span>
-                      </div>
-                      <h3 className="mt-5 font-semibold tracking-tight">{rule.title}</h3>
-                      <p className="mt-2 text-sm leading-6 text-muted-foreground">{rule.copy}</p>
-                      <div className="mt-4 flex gap-2 rounded-xl bg-muted/60 p-3 text-xs leading-5">
-                        <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-primary" />
-                        {rule.example}
-                      </div>
-                    </article>
-                  );
-                })}
               </div>
             </div>
-          </section>
-        ) : (
-          <section className="grid min-h-[calc(100vh-114px)] lg:grid-cols-[minmax(370px,0.9fr)_minmax(520px,1.25fr)]">
-            <div className="border-b border-border bg-[#fbfaf6] p-5 lg:border-r lg:border-b-0 sm:p-7">
-              <div className="mb-5 flex items-end justify-between gap-4">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Task input</p>
-                  <h2 className="mt-1 text-xl font-semibold tracking-tight">What should Rhea inspect?</h2>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="block">
+                <span className="mb-2 block text-xs font-medium text-zinc-300">Application</span>
+                <div className="relative">
+                  <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-zinc-500" />
+                  <select
+                    value={application}
+                    onChange={(event) => setApplication(event.target.value)}
+                    className="h-11 w-full appearance-none rounded-xl border border-white/10 bg-[#101317] pr-9 pl-10 text-sm outline-none transition focus:border-emerald-400/50 focus:ring-3 focus:ring-emerald-400/10"
+                  >
+                    <option value="quickbooks-angular">quickbooks-angular</option>
+                  </select>
+                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-zinc-500">⌄</span>
                 </div>
-                <div className="flex items-center gap-1">
-                  <Button variant="outline" size="sm" onClick={loadExample} disabled={isRunning}>
-                    <Sparkles /> Example
+                <span className="mt-2 block text-xs text-zinc-600">1 supported application</span>
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-xs font-medium text-zinc-300">Batch requirements</span>
+                <div className="relative">
+                  <ShieldCheck className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-zinc-500" />
+                  <select
+                    value={batchKey}
+                    onChange={(event) => setBatchKey(event.target.value as BatchKey)}
+                    className="h-11 w-full appearance-none rounded-xl border border-white/10 bg-[#101317] pr-9 pl-10 text-sm outline-none transition focus:border-emerald-400/50 focus:ring-3 focus:ring-emerald-400/10"
+                  >
+                    {Object.entries(BATCHES).map(([key, batch]) => (
+                      <option key={key} value={key}>
+                        {batch.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-zinc-500">⌄</span>
+                </div>
+                <span className="mt-2 block text-xs text-zinc-600">
+                  {selectedBatch.bugs} bugs · {selectedBatch.features} features · {selectedBatch.rest} rest
+                </span>
+              </label>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-[#0d1013]">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/8 px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium">Rubrics JSON array</p>
+                  <p className="mt-0.5 text-xs text-zinc-500">Paste the full batch as a JSON array.</p>
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={loadProvidedExample}
+                    className="border-white/10 bg-transparent text-zinc-300 hover:bg-white/5 hover:text-white"
+                  >
+                    <FileJson2 /> Load provided example
                   </Button>
-                  <Button variant="ghost" size="sm" onClick={resetFields} disabled={isRunning}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={reset}
+                    className="text-zinc-400 hover:bg-white/5 hover:text-white"
+                  >
                     <RefreshCcw /> Reset
                   </Button>
                 </div>
               </div>
+              <Textarea
+                value={jsonInput}
+                onChange={(event) => setJsonInput(event.target.value)}
+                placeholder={'[\n  {\n    "criterion": "Home: observable issue",\n    "score": 10,\n    "tags": ["bug"],\n    "forms": { ... }\n  }\n]'}
+                spellCheck={false}
+                className="min-h-[430px] resize-y rounded-none border-0 bg-transparent p-5 font-mono text-[12px] leading-6 text-zinc-300 shadow-none focus-visible:ring-0"
+              />
+            </div>
 
-              <div className="space-y-5">
-                <label className="block">
-                  <span className="mb-2 flex items-center justify-between text-sm font-medium">
-                    Prompt
-                    <span className="font-normal text-muted-foreground">{wordCount} words</span>
-                  </span>
-                  <Textarea
-                    id="prompt-input"
-                    value={prompt}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setPrompt(value);
-                      if (value.trim()) setFieldErrors((current) => ({ ...current, prompt: false }));
-                    }}
-                    placeholder="Paste the task prompt here…"
-                    required
-                    aria-invalid={fieldErrors.prompt}
-                    aria-describedby={fieldErrors.prompt ? 'prompt-error' : undefined}
-                    className={`min-h-40 resize-y rounded-2xl bg-white p-4 leading-6 shadow-sm ${
-                      fieldErrors.prompt ? 'border-destructive focus-visible:ring-destructive/25' : 'border-border'
-                    }`}
-                  />
-                  {fieldErrors.prompt && (
-                    <span id="prompt-error" className="mt-2 block text-xs font-medium text-destructive">
-                      Prompt is required.
-                    </span>
-                  )}
-                </label>
-
-                <label className="block">
-                  <span className="mb-2 flex items-center justify-between text-sm font-medium">
-                    Rubrics
-                    <span className="font-normal text-muted-foreground">{rubricCount} criteria</span>
-                  </span>
-                  <Textarea
-                    id="rubrics-input"
-                    value={rubrics}
-                    onChange={(event) => {
-                      const value = event.target.value;
-                      setRubrics(value);
-                      if (value.trim()) setFieldErrors((current) => ({ ...current, rubrics: false }));
-                    }}
-                    placeholder={'1. First observable criterion\n2. Second observable criterion'}
-                    required
-                    aria-invalid={fieldErrors.rubrics}
-                    aria-describedby={fieldErrors.rubrics ? 'rubrics-error' : undefined}
-                    className={`min-h-64 resize-y rounded-2xl bg-white p-4 font-mono text-[13px] leading-6 shadow-sm ${
-                      fieldErrors.rubrics ? 'border-destructive focus-visible:ring-destructive/25' : 'border-border'
-                    }`}
-                  />
-                  {fieldErrors.rubrics && (
-                    <span id="rubrics-error" className="mt-2 block text-xs font-medium text-destructive">
-                      Rubrics are required.
-                    </span>
-                  )}
-                </label>
-
-                <div className="rounded-2xl border border-border bg-white p-4 shadow-sm">
-                  <div className="flex items-center gap-2 text-sm font-medium">
-                    <CheckCircle2 className="size-4 text-primary" /> Review scope
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {['Prompt quality', 'Rubric quality', 'Alignment', 'Complexity', 'Consistency'].map((item) => (
-                      <Badge key={item} variant="outline" className="bg-background px-2.5 py-1 text-[11px]">
-                        {item}
-                      </Badge>
-                    ))}
-                  </div>
+            {parseError && (
+              <div className="flex gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
+                <CircleAlert className="mt-0.5 size-4 shrink-0" />
+                <div>
+                  <strong>JSON could not be validated</strong>
+                  <p className="mt-1 text-xs leading-5 text-rose-200/75">{parseError}</p>
                 </div>
+              </div>
+            )}
+
+            <Button
+              onClick={runValidation}
+              disabled={!canValidate}
+              className="h-11 bg-emerald-400 px-5 font-semibold text-[#06251a] hover:bg-emerald-300 disabled:bg-zinc-800 disabled:text-zinc-500"
+            >
+              {isRunning ? <Loader2 className="animate-spin" /> : <Play />}
+              {isRunning ? 'Researching docs and validating…' : 'Validate rubric batch'}
+            </Button>
+          </section>
+
+          <aside className="space-y-5 xl:sticky xl:top-6 xl:self-start">
+            <div className="rounded-2xl border border-white/10 bg-[#0d1013] p-5">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">Batch requirements</p>
+                  <p className="mt-1 text-xs text-zinc-500">{selectedBatch.label}</p>
+                </div>
+                {batchSummary && (
+                  <Badge
+                    className={
+                      batchSummary.checks.every((check) => check.pass)
+                        ? 'bg-emerald-400/10 text-emerald-300'
+                        : 'bg-rose-400/10 text-rose-300'
+                    }
+                  >
+                    {batchSummary.checks.every((check) => check.pass) ? 'Passed' : 'Needs work'}
+                  </Badge>
+                )}
+              </div>
+
+              <div className="mt-4 space-y-2">
+                {(batchSummary?.checks || [
+                  { label: 'Rubrics', current: 0, target: selectedBatch.total, pass: false, detail: 'Exactly ' + selectedBatch.total + ' required' },
+                  { label: 'Bugs', current: 0, target: selectedBatch.bugs, pass: false, detail: selectedBatch.bugs + ' minimum' },
+                  { label: 'Feature requests', current: 0, target: selectedBatch.features, pass: false, detail: selectedBatch.features + ' minimum' },
+                  { label: 'Rest bugs or features', current: 0, target: selectedBatch.rest, pass: false, detail: selectedBatch.rest + ' minimum' },
+                  { label: 'Valid single tags', current: 0, target: 0, pass: true, detail: 'One valid tag per rubric' },
+                ]).map((check) => (
+                  <div
+                    key={check.label}
+                    className="flex items-center justify-between gap-4 rounded-xl border border-white/7 bg-white/[0.02] px-3.5 py-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-medium text-zinc-300">{check.label}</p>
+                      <p className="mt-0.5 text-[11px] text-zinc-600">{check.detail}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-xs text-zinc-400">
+                        {check.current}/{check.target}
+                      </span>
+                      {batchSummary &&
+                        (check.pass ? (
+                          <CheckCircle2 className="size-4 text-emerald-400" />
+                        ) : (
+                          <XCircle className="size-4 text-rose-400" />
+                        ))}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 
-            <div className="min-w-0 bg-card p-5 sm:p-7">
-              {hasReview ? (
-                <>
-                  <div className="flex flex-col gap-5 border-b border-border pb-6 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-4">
-                  <div
-                    className="grid size-[74px] shrink-0 place-items-center rounded-full p-[7px]"
-                    style={{
-                      background: `conic-gradient(var(--primary) 0 ${analysis.overall}%, var(--muted) ${analysis.overall}% 100%)`,
-                    }}
-                  >
-                    <div className="grid size-full place-items-center rounded-full bg-card">
-                      <div className="text-center">
-                        <strong className="block text-xl leading-none">{analysis.overall}</strong>
-                        <span className="text-[10px] text-muted-foreground">/ 100</span>
-                      </div>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h2 className="text-xl font-semibold tracking-tight">
-                        {analysis.findings.length === 0 ? 'Ready to grade' : analysis.overall >= 80 ? 'Small revisions' : 'Needs revision'}
-                      </h2>
-                      <Badge variant={highCount ? 'destructive' : 'secondary'}>
-                        {analysis.findings.length} {analysis.findings.length === 1 ? 'issue' : 'issues'}
-                      </Badge>
-                    </div>
-                    <p className="mt-1 max-w-lg text-sm leading-5 text-muted-foreground">
-                      {analysis.findings.length === 0
-                        ? 'The prompt and rubric set are aligned, atomic, and objectively gradable.'
-                        : `${highCount} high-impact finding${highCount === 1 ? '' : 's'} should be resolved before this task is published.`}
-                    </p>
-                  </div>
+            <div className="rounded-2xl border border-white/10 bg-[#0d1013] p-5">
+              <div className="flex items-center gap-3">
+                <span className="grid size-9 place-items-center rounded-xl bg-indigo-400/10 text-indigo-300">
+                  {aiStatus === 'researching' ? <Loader2 className="size-4 animate-spin" /> : <Bot className="size-4" />}
+                </span>
+                <div>
+                  <p className="text-sm font-medium">Application knowledge</p>
+                  <p className="mt-0.5 text-xs text-zinc-500">
+                    {aiStatus === 'idle' && 'Waiting for a batch'}
+                    {aiStatus === 'researching' && 'Searching product documentation'}
+                    {aiStatus === 'ready' && 'Documentation context ready'}
+                    {aiStatus === 'unavailable' && 'AI review unavailable'}
+                  </p>
                 </div>
-                <Button variant="outline" onClick={() => copyText(reportText, 'Report copied')}>
-                  <Copy /> Copy report
-                </Button>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 py-5 sm:grid-cols-4">
-                {[
-                  ['Prompt', analysis.scores.prompt, analysis.scores.prompt >= 80 ? 'Strong' : 'Review'],
-                  ['Rubrics', analysis.scores.rubrics, `${analysis.findings.filter((f) => f.category === 'Rubric quality').length} issues`],
-                  ['Alignment', analysis.scores.alignment, `${analysis.alignments.filter((a) => a.status !== 'Covered').length} gaps`],
-                  ['Complexity', analysis.scores.complexity, analysis.scores.complexity >= 65 ? 'Valid' : 'Light'],
-                ].map(([label, score, note]) => (
-                  <div key={String(label)} className="rounded-2xl border border-border bg-background/55 p-3.5">
-                    <div className="flex items-baseline justify-between gap-2">
-                      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-                      <strong className="text-lg">{score}</strong>
-                    </div>
-                    <p className="mt-2 text-xs text-muted-foreground">{note}</p>
-                  </div>
-                ))}
-              </div>
+              {aiResponse?.applicationBrief && (
+                <p className="mt-4 text-xs leading-5 text-zinc-400">{aiResponse.applicationBrief}</p>
+              )}
 
-              <div className="flex gap-1 overflow-x-auto border-b border-border">
-                {([
-                  ['findings', `Findings (${analysis.findings.length})`],
-                  ['alignment', 'Alignment map'],
-                  ['revision', 'Improved version'],
-                ] as [Tab, string][]).map(([tab, label]) => (
-                  <button
-                    key={tab}
-                    onClick={() => setActiveTab(tab)}
-                    className={`relative shrink-0 px-3 py-2.5 text-sm font-medium transition ${
-                      activeTab === tab ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
-                    }`}
-                  >
-                    {label}
-                    {activeTab === tab && <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-primary" />}
-                  </button>
-                ))}
-              </div>
-
-              {activeTab === 'findings' && (
-                <div className="pt-5">
-                  <div className="mb-3 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold">Findings</h3>
-                    <span className="text-xs text-muted-foreground">Sorted by impact</span>
-                  </div>
-                  {analysis.findings.length ? (
-                    <div className="space-y-3">
-                      {analysis.findings.map((finding) => {
-                        const Icon = findingIcon(finding.category);
-                        return (
-                          <article key={finding.id} className="group rounded-2xl border border-border bg-white p-4 transition hover:border-primary/35 hover:shadow-sm sm:p-5">
-                            <div className="flex gap-3.5">
-                              <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-[#fff2e8] text-[#a94918]">
-                                <Icon className="size-[17px]" />
-                              </span>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <Badge variant={severityVariant(finding.severity)}>{finding.severity}</Badge>
-                                  <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">{finding.category}</span>
-                                  <h4 className="basis-full font-semibold tracking-tight sm:basis-auto">{finding.title}</h4>
-                                </div>
-                                <p className="mt-2 text-sm leading-5 text-muted-foreground">{finding.detail}</p>
-                                <div className="mt-3 flex items-start gap-2 rounded-xl bg-muted/65 px-3 py-2.5 text-sm">
-                                  <Sparkles className="mt-0.5 size-4 shrink-0 text-primary" />
-                                  <span><strong className="font-medium">Suggested fix:</strong> {finding.fix}</span>
-                                </div>
-                              </div>
-                            </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div className="grid min-h-56 place-items-center rounded-2xl border border-dashed border-primary/30 bg-primary/[0.035] p-8 text-center">
-                      <div>
-                        <span className="mx-auto grid size-12 place-items-center rounded-full bg-accent text-accent-foreground">
-                          <Check className="size-5" />
-                        </span>
-                        <h4 className="mt-4 font-semibold">No blocking issues found</h4>
-                        <p className="mt-1 text-sm text-muted-foreground">The prompt and rubrics are ready for a human final review.</p>
-                      </div>
-                    </div>
-                  )}
+              {aiError && (
+                <div className="mt-4 rounded-xl border border-amber-500/25 bg-amber-500/8 p-3 text-xs leading-5 text-amber-200">
+                  {aiError}
                 </div>
               )}
 
-              {activeTab === 'alignment' && (
-                <div className="pt-5">
-                  <div className="mb-4">
-                    <h3 className="text-sm font-semibold">Requirement coverage</h3>
-                    <p className="mt-1 text-xs text-muted-foreground">Every prompt requirement should map to at least one independently gradable criterion.</p>
-                  </div>
-                  <div className="overflow-hidden rounded-2xl border border-border">
-                    {analysis.alignments.map((alignment, index) => (
-                      <div
-                        key={alignment.id}
-                        className={`grid gap-3 bg-white p-4 sm:grid-cols-[44px_minmax(0,1fr)_120px_84px] sm:items-center ${index ? 'border-t border-border' : ''}`}
-                      >
-                        <Badge variant="outline" className="justify-self-start bg-background font-mono">{alignment.id}</Badge>
-                        <p className="text-sm leading-5">{alignment.requirement}</p>
-                        <div className="flex flex-wrap gap-1">
-                          {alignment.rubricIds.length ? alignment.rubricIds.map((id) => (
-                            <Badge key={id} className="bg-primary/10 text-primary">{id}</Badge>
-                          )) : <span className="text-xs text-muted-foreground">No match</span>}
-                        </div>
-                        <Badge
-                          variant={alignment.status === 'Missing' ? 'destructive' : alignment.status === 'Partial' ? 'secondary' : 'outline'}
-                          className="justify-self-start"
+              {aiResponse?.sources.length ? (
+                <div className="mt-4 space-y-2 border-t border-white/8 pt-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">
+                    Documentation sources
+                  </p>
+                  {aiResponse.sources.slice(0, 5).map((source) => (
+                    <a
+                      key={source.url}
+                      href={source.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-start gap-2 text-xs leading-5 text-indigo-300 hover:text-indigo-200"
+                    >
+                      <ExternalLink className="mt-0.5 size-3 shrink-0" />
+                      {source.title || source.url}
+                    </a>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          </aside>
+        </div>
+
+        {results.length > 0 && (
+          <section className="mt-10 border-t border-white/8 pt-8">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-600">Validation report</p>
+                <h2 className="mt-2 text-2xl font-semibold tracking-tight">
+                  {failingRubrics} failing rubrics · {issueCount} local findings
+                </h2>
+                <p className="mt-2 text-sm text-zinc-500">
+                  Deterministic checks are shown immediately; documentation and grammar findings appear when AI review is available.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                onClick={copyReport}
+                className="border-white/10 bg-transparent text-zinc-300 hover:bg-white/5 hover:text-white"
+              >
+                {copied ? <Check /> : <Copy />}
+                {copied ? 'Copied' : 'Copy report'}
+              </Button>
+            </div>
+
+            <div className="mt-6 space-y-3">
+              {results.map((result) => {
+                const aiReview = aiResponse?.rubricReviews.find((review) => review.index === result.index);
+                const hasErrors = result.issues.some((issue) => issue.severity === 'error');
+                const aiIssueCount =
+                  (aiReview?.grammarIssues.length || 0) + (aiReview?.suggestions.length || 0);
+
+                return (
+                  <details
+                    key={result.index}
+                    className="group overflow-hidden rounded-2xl border border-white/10 bg-[#0d1013]"
+                    open={result.index === 0}
+                  >
+                    <summary className="flex cursor-pointer list-none items-start justify-between gap-4 px-5 py-4">
+                      <div className="flex min-w-0 gap-3">
+                        <span
+                          className={
+                            'mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg ' +
+                            (hasErrors
+                              ? 'bg-rose-500/10 text-rose-300'
+                              : 'bg-emerald-500/10 text-emerald-300')
+                          }
                         >
-                          {alignment.status}
-                        </Badge>
+                          {hasErrors ? <AlertTriangle className="size-4" /> : <BadgeCheck className="size-4" />}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono text-xs text-zinc-600">#{result.index + 1}</span>
+                            {result.rubric.tags.map((tag) => (
+                              <Badge key={tag} className="border border-white/10 bg-white/5 text-zinc-300">
+                                {tag}
+                              </Badge>
+                            ))}
+                            <span className="text-xs text-zinc-600">
+                              {result.issues.length + aiIssueCount} findings
+                            </span>
+                          </div>
+                          <p className="mt-2 line-clamp-2 text-sm leading-5 text-zinc-200">
+                            {result.rubric.criterion || 'Missing criterion'}
+                          </p>
+                        </div>
                       </div>
-                    ))}
-                  </div>
-                  <div className="mt-4 flex items-start gap-3 rounded-2xl border border-primary/15 bg-primary/[0.045] p-4">
-                    <AlertTriangle className="mt-0.5 size-4 shrink-0 text-primary" />
-                    <p className="text-sm leading-5">
-                      Rubric-only expectations remain visible as findings even when related keywords create a partial mapping.
-                    </p>
-                  </div>
-                </div>
-              )}
+                      <span className="text-zinc-600 transition group-open:rotate-180">⌄</span>
+                    </summary>
 
-              {activeTab === 'revision' && (
-                <div className="pt-5">
-                  <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <h3 className="text-sm font-semibold">Rhea’s improved version</h3>
-                      <p className="mt-1 text-xs text-muted-foreground">Minimal edits preserve the original task while resolving detected issues.</p>
-                    </div>
-                    <Button onClick={applyRevision}><WandSparkles /> Apply improvements</Button>
-                  </div>
+                    <div className="grid gap-5 border-t border-white/8 px-5 py-5 lg:grid-cols-2">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-600">
+                          Structural checks
+                        </p>
+                        <div className="mt-3 space-y-2">
+                          {result.issues.length ? (
+                            result.issues.map((issue, issueIndex) => (
+                              <div
+                                key={issue.field + issueIndex}
+                                className={
+                                  'rounded-xl border p-3 ' +
+                                  (issue.severity === 'error'
+                                    ? 'border-rose-500/20 bg-rose-500/[0.06]'
+                                    : 'border-amber-500/20 bg-amber-500/[0.06]')
+                                }
+                              >
+                                <div className="flex items-center gap-2">
+                                  <Badge className="bg-white/5 font-mono text-[10px] text-zinc-400">
+                                    {issue.field}
+                                  </Badge>
+                                  <span
+                                    className={
+                                      'text-xs font-medium ' +
+                                      (issue.severity === 'error' ? 'text-rose-200' : 'text-amber-200')
+                                    }
+                                  >
+                                    {issue.message}
+                                  </span>
+                                </div>
+                                <p className="mt-2 text-xs leading-5 text-zinc-500">{issue.suggestion}</p>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="flex gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.05] p-3 text-xs text-emerald-200">
+                              <CheckCircle2 className="size-4 shrink-0" />
+                              All deterministic checks passed.
+                            </div>
+                          )}
+                        </div>
+                      </div>
 
-                  <div className="space-y-4">
-                    <div className="rounded-2xl border border-border bg-[#fbfaf6] p-4">
-                      <div className="mb-3 flex items-center justify-between">
-                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Revised prompt</span>
-                        <Button variant="ghost" size="xs" onClick={() => copyText(analysis.revisedPrompt, 'Prompt copied')}><Copy /> Copy</Button>
+                      <div>
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-600">
+                            Docs & grammar review
+                          </p>
+                          {aiReview && (
+                            <Badge className={docsBadge(aiReview.documentationStatus)}>
+                              {aiReview.documentationStatus.replace('_', ' ')}
+                            </Badge>
+                          )}
+                        </div>
+
+                        {aiStatus === 'researching' && (
+                          <div className="mt-3 flex items-center gap-2 rounded-xl border border-indigo-400/15 bg-indigo-400/[0.04] p-3 text-xs text-indigo-200">
+                            <Loader2 className="size-4 animate-spin" /> Reviewing against documentation…
+                          </div>
+                        )}
+
+                        {aiReview ? (
+                          <div className="mt-3 space-y-3">
+                            <p className="rounded-xl border border-white/7 bg-white/[0.02] p-3 text-xs leading-5 text-zinc-400">
+                              {aiReview.documentationSummary}
+                            </p>
+                            {aiReview.grammarIssues.map((issue, index) => (
+                              <div key={'grammar' + index} className="rounded-xl border border-amber-500/20 bg-amber-500/[0.05] p-3 text-xs leading-5 text-amber-100">
+                                <strong>Grammar:</strong> {issue}
+                              </div>
+                            ))}
+                            {aiReview.suggestions.map((suggestion, index) => (
+                              <div key={'suggestion' + index} className="rounded-xl border border-indigo-400/20 bg-indigo-400/[0.05] p-3 text-xs leading-5 text-indigo-100">
+                                <strong>Suggestion:</strong> {suggestion}
+                              </div>
+                            ))}
+                          </div>
+                        ) : aiStatus === 'unavailable' ? (
+                          <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.05] p-3 text-xs leading-5 text-amber-200">
+                            Local validation completed. Connect an OpenAI API key to enable documentation and grammar review.
+                          </div>
+                        ) : aiStatus !== 'researching' ? (
+                          <div className="mt-3 rounded-xl border border-white/7 bg-white/[0.02] p-3 text-xs text-zinc-600">
+                            Run validation to start the documentation review.
+                          </div>
+                        ) : null}
                       </div>
-                      <p className="text-sm leading-6">{analysis.revisedPrompt}</p>
                     </div>
-                    <div className="rounded-2xl border border-border bg-[#fbfaf6] p-4">
-                      <div className="mb-3 flex items-center justify-between">
-                        <span className="text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">Revised rubrics</span>
-                        <Button variant="ghost" size="xs" onClick={() => copyText(analysis.revisedRubrics, 'Rubrics copied')}><Copy /> Copy</Button>
-                      </div>
-                      <pre className="whitespace-pre-wrap font-mono text-[13px] leading-6">{analysis.revisedRubrics}</pre>
-                    </div>
-                  </div>
-                </div>
-              )}
-                </>
-              ) : (
-                <div className="grid min-h-[520px] place-items-center rounded-2xl border border-dashed border-border bg-background/40 p-8 text-center">
-                  <div className="max-w-sm">
-                    <span className="mx-auto grid size-12 place-items-center rounded-full bg-primary/[0.08] text-primary">
-                      <ListChecks className="size-5" />
-                    </span>
-                    <h3 className="mt-4 font-semibold">Ready for a fresh review</h3>
-                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                      Add your prompt and rubric criteria, or use Example to fill both fields with sample content.
-                    </p>
-                  </div>
-                </div>
-              )}
+                  </details>
+                );
+              })}
             </div>
           </section>
         )}
       </div>
-
-      {notice && (
-        <div role="status" className="fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-foreground px-4 py-2 text-sm font-medium text-background shadow-xl">
-          <Check className="size-4" /> {notice}
-        </div>
-      )}
     </main>
   );
 }

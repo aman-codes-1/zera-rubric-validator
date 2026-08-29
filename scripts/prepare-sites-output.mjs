@@ -6,31 +6,12 @@ const exportDirectory = path.join(projectDirectory, 'out');
 const distributionDirectory = path.join(projectDirectory, 'dist');
 const serverDirectory = path.join(distributionDirectory, 'server');
 const staticDirectory = path.join(distributionDirectory, 'static');
+const workerEntry = path.join(projectDirectory, 'worker', 'checkset-worker.js');
 
 await rm(distributionDirectory, { recursive: true, force: true });
 await mkdir(serverDirectory, { recursive: true });
 await cp(exportDirectory, staticDirectory, { recursive: true });
-
-const workerSource = `export default {
-  async fetch(request, env) {
-    const response = await env.ASSETS.fetch(request);
-    if (response.status !== 404 || request.method !== 'GET') return response;
-
-    const url = new URL(request.url);
-    const finalSegment = url.pathname.split('/').filter(Boolean).at(-1) ?? '';
-    if (finalSegment.includes('.')) return response;
-
-    url.pathname = url.pathname.endsWith('/')
-      ? url.pathname + 'index.html'
-      : url.pathname + '/index.html';
-    const routeResponse = await env.ASSETS.fetch(new Request(url, request));
-    if (routeResponse.status !== 404) return routeResponse;
-
-    url.pathname = '/index.html';
-    return env.ASSETS.fetch(new Request(url, request));
-  },
-};
-`;
+await cp(workerEntry, path.join(serverDirectory, 'index.js'));
 
 const workerConfiguration = {
   topLevelName: 'rhea-review',
@@ -48,7 +29,6 @@ const workerConfiguration = {
   },
 };
 
-await writeFile(path.join(serverDirectory, 'index.js'), workerSource);
 await writeFile(
   path.join(serverDirectory, 'wrangler.json'),
   `${JSON.stringify(workerConfiguration, null, 2)}\n`,
