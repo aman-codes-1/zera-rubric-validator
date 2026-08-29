@@ -394,6 +394,7 @@ export default function Home() {
 
   const wordCount = useMemo(() => prompt.trim().split(/\s+/).filter(Boolean).length, [prompt]);
   const rubricCount = useMemo(() => parseRubrics(rubrics).length, [rubrics]);
+  const canRunReview = Boolean(prompt.trim() && rubrics.trim());
   const highCount = analysis.findings.filter((finding) => finding.severity === 'High').length;
 
   function runReview() {
@@ -508,7 +509,7 @@ export default function Home() {
               {showRulebook ? 'Back to review' : 'Rulebook'}
             </Button>
             {!showRulebook && (
-              <Button className="h-9 bg-primary px-4" onClick={runReview} disabled={isRunning}>
+              <Button className="h-9 bg-primary px-4" onClick={runReview} disabled={isRunning || !canRunReview}>
                 {isRunning ? <Loader2 className="animate-spin" /> : <Play />}
                 {isRunning ? 'Reviewing…' : 'Run review'}
               </Button>
