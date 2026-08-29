@@ -382,14 +382,14 @@ const RULES = [
 ];
 
 export default function Home() {
-  const [prompt, setPrompt] = useState(EXAMPLE_PROMPT);
-  const [rubrics, setRubrics] = useState(EXAMPLE_RUBRICS);
-  const [analysis, setAnalysis] = useState(() => evaluateTask(EXAMPLE_PROMPT, EXAMPLE_RUBRICS));
+  const [prompt, setPrompt] = useState('');
+  const [rubrics, setRubrics] = useState('');
+  const [analysis, setAnalysis] = useState(() => evaluateTask('', ''));
   const [activeTab, setActiveTab] = useState<Tab>('findings');
   const [showRulebook, setShowRulebook] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [notice, setNotice] = useState('');
-  const [hasReview, setHasReview] = useState(true);
+  const [hasReview, setHasReview] = useState(false);
 
   const wordCount = useMemo(() => prompt.trim().split(/\s+/).filter(Boolean).length, [prompt]);
   const rubricCount = useMemo(() => parseRubrics(rubrics).length, [rubrics]);
