@@ -118,7 +118,6 @@ function parseRubrics(text: string) {
       text: line.replace(/^\s*(?:\d+[.)]|[-*])\s*/, '').trim(),
     }));
 }
-
 function extractRequirements(text: string) {
   const normalized = text.replace(/\s+/g, ' ').trim();
   const pieces = normalized
@@ -390,6 +389,7 @@ export default function Home() {
   const [showRulebook, setShowRulebook] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [notice, setNotice] = useState('');
+  const [hasReview, setHasReview] = useState(true);
 
   const wordCount = useMemo(() => prompt.trim().split(/\s+/).filter(Boolean).length, [prompt]);
   const rubricCount = useMemo(() => parseRubrics(rubrics).length, [rubrics]);
@@ -401,6 +401,7 @@ export default function Home() {
     window.setTimeout(() => {
       setAnalysis(evaluateTask(prompt, rubrics));
       setActiveTab('findings');
+      setHasReview(true);
       setIsRunning(false);
       setNotice('Review complete');
       window.setTimeout(() => setNotice(''), 1800);
@@ -427,12 +428,23 @@ export default function Home() {
     window.setTimeout(() => setNotice(''), 1800);
   }
 
-  function resetExample() {
+  function resetFields() {
+    setPrompt('');
+    setRubrics('');
+    setAnalysis(evaluateTask('', ''));
+    setActiveTab('findings');
+    setHasReview(false);
+    setNotice('Fields cleared');
+    window.setTimeout(() => setNotice(''), 1800);
+  }
+
+  function loadExample() {
     setPrompt(EXAMPLE_PROMPT);
     setRubrics(EXAMPLE_RUBRICS);
     setAnalysis(evaluateTask(EXAMPLE_PROMPT, EXAMPLE_RUBRICS));
     setActiveTab('findings');
-    setNotice('Example restored');
+    setHasReview(true);
+    setNotice('Example loaded');
     window.setTimeout(() => setNotice(''), 1800);
   }
 
@@ -530,9 +542,14 @@ export default function Home() {
                   <p className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground">Task input</p>
                   <h2 className="mt-1 text-xl font-semibold tracking-tight">What should Rhea inspect?</h2>
                 </div>
-                <Button variant="ghost" size="sm" onClick={resetExample}>
-                  <RefreshCcw /> Reset
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button variant="outline" size="sm" onClick={loadExample} disabled={isRunning}>
+                    <Sparkles /> Example
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={resetFields} disabled={isRunning}>
+                    <RefreshCcw /> Reset
+                  </Button>
+                </div>
               </div>
 
               <div className="space-y-5">
@@ -578,7 +595,9 @@ export default function Home() {
             </div>
 
             <div className="min-w-0 bg-card p-5 sm:p-7">
-              <div className="flex flex-col gap-5 border-b border-border pb-6 sm:flex-row sm:items-center sm:justify-between">
+              {hasReview ? (
+                <>
+                  <div className="flex flex-col gap-5 border-b border-border pb-6 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-center gap-4">
                   <div
                     className="grid size-[74px] shrink-0 place-items-center rounded-full p-[7px]"
@@ -759,6 +778,20 @@ export default function Home() {
                       </div>
                       <pre className="whitespace-pre-wrap font-mono text-[13px] leading-6">{analysis.revisedRubrics}</pre>
                     </div>
+                  </div>
+                </div>
+              )}
+                </>
+              ) : (
+                <div className="grid min-h-[520px] place-items-center rounded-2xl border border-dashed border-border bg-background/40 p-8 text-center">
+                  <div className="max-w-sm">
+                    <span className="mx-auto grid size-12 place-items-center rounded-full bg-primary/[0.08] text-primary">
+                      <ListChecks className="size-5" />
+                    </span>
+                    <h3 className="mt-4 font-semibold">Ready for a fresh review</h3>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      Add your prompt and rubric criteria, or use Example to fill both fields with sample content.
+                    </p>
                   </div>
                 </div>
               )}
