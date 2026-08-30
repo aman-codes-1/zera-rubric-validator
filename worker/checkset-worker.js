@@ -130,7 +130,7 @@ async function validateWithOpenAI(request, env) {
 
   const input = [
     'Application identifier: ' + JSON.stringify(application),
-    'Batch preset: ' + String(body.batch || 'a'),
+    'Batch preset: ' + String(body.batch || 'Batch A'),
     'Rubric JSON data:',
     JSON.stringify(body.rubrics),
   ].join('\n\n');

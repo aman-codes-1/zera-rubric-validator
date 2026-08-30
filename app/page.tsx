@@ -43,7 +43,7 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 
-type BatchKey = 'a' | 'b' | 'c';
+type BatchKey = 'Batch A' | 'Batch B' | 'Batch C';
 const APPLICATIONS = ['quickbooks', 'workday'] as const;
 type Application = (typeof APPLICATIONS)[number];
 type IssueSeverity = 'error' | 'warning';
@@ -106,9 +106,9 @@ const BATCHES: Record<
   BatchKey,
   { label: string; total: number; bugs: number; features: number }
 > = {
-  a: { label: 'Batch A · 20 rubrics (5 bugs + 10 features)', total: 20, bugs: 5, features: 10 },
-  b: { label: 'Batch B · 20 rubrics (3 bugs + 3 features)', total: 20, bugs: 3, features: 3 },
-  c: { label: 'Batch C · 10 rubrics (3 bugs + 3 features)', total: 10, bugs: 3, features: 3 },
+  'Batch A': { label: 'Batch A · 20 rubrics (5 + 10 + 5)', total: 20, bugs: 5, features: 10 },
+  'Batch B': { label: 'Batch B · 20 rubrics (3 + 3 + 14)', total: 20, bugs: 3, features: 3 },
+  'Batch C': { label: 'Batch C · 10 rubrics (3 + 3 + 4)', total: 10, bugs: 3, features: 3 },
 };
 
 const VALID_TAGS = new Set(['bug', 'feature request']);
@@ -454,7 +454,7 @@ function docsBadge(status: AiReview['documentationStatus']) {
 
 export default function Home() {
   const [application, setApplication] = useState<Application>(APPLICATIONS[0]);
-  const [batchKey, setBatchKey] = useState<BatchKey>('a');
+  const [batchKey, setBatchKey] = useState<BatchKey>('Batch A');
   const [jsonInput, setJsonInput] = useState('');
   const [results, setResults] = useState<RubricResult[]>([]);
   const [aiStatus, setAiStatus] = useState<AiStatus>('idle');
