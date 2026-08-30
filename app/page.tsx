@@ -368,8 +368,8 @@ function buildBatchSummary(rubrics: RubricRecord[], key: BatchKey): BatchSummary
       {
         label: 'Valid single tags',
         current: validSingleTags,
-        target: rubrics.length,
-        pass: validSingleTags === rubrics.length,
+        target: requirement.total,
+        pass: validSingleTags === requirement.total,
         detail: 'One valid tag per rubric',
       },
     ],
