@@ -9,6 +9,7 @@ import {
   Braces,
   Check,
   CheckCircle2,
+  ChevronDown,
   CircleAlert,
   Copy,
   ExternalLink,
@@ -678,7 +679,10 @@ export default function Home() {
                       <option key={item} value={item}>{item}</option>
                     ))}
                   </select>
-                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-zinc-500">⌄</span>
+                  <ChevronDown
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-zinc-500"
+                  />
                 </div>
                 <span className="mt-2 block text-xs text-zinc-600">
                   {APPLICATIONS.length} supported applications
@@ -706,7 +710,10 @@ export default function Home() {
                       </option>
                     ))}
                   </select>
-                  <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-zinc-500">⌄</span>
+                  <ChevronDown
+                    aria-hidden="true"
+                    className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-zinc-500"
+                  />
                 </div>
                 <span className="mt-2 block text-xs text-zinc-600">
                   {selectedBatch.bugs} bugs minimum · {selectedBatch.features} feature requests minimum
@@ -981,7 +988,10 @@ export default function Home() {
                           </p>
                         </div>
                       </div>
-                      <span className="text-zinc-600 transition group-open:rotate-180">⌄</span>
+                      <ChevronDown
+                        aria-hidden="true"
+                        className="size-4 text-zinc-600 transition group-open:rotate-180"
+                      />
                     </summary>
 
                     <div className="grid gap-5 border-t border-white/8 px-5 py-5 lg:grid-cols-2">
