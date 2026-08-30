@@ -59,7 +59,6 @@ type BatchSummary = {
   total: number;
   bugs: number;
   features: number;
-  rest: number;
   validSingleTags: number;
   checks: Array<{
     label: string;
@@ -86,11 +85,11 @@ type AiResponse = {
 
 const BATCHES: Record<
   BatchKey,
-  { label: string; total: number; bugs: number; features: number; rest: number }
+  { label: string; total: number; bugs: number; features: number }
 > = {
-  a: { label: 'Batch A · 20 rubrics (5+10)', total: 20, bugs: 5, features: 10, rest: 5 },
-  b: { label: 'Batch B · 20 rubrics (3+3)', total: 20, bugs: 3, features: 3, rest: 14 },
-  c: { label: 'Batch C · 10 rubrics (3+3)', total: 10, bugs: 3, features: 3, rest: 4 },
+  a: { label: 'Batch A · 20 rubrics (5 bugs + 10 features)', total: 20, bugs: 5, features: 10 },
+  b: { label: 'Batch B · 20 rubrics (3 bugs + 3 features)', total: 20, bugs: 3, features: 3 },
+  c: { label: 'Batch C · 10 rubrics (3 bugs + 3 features)', total: 10, bugs: 3, features: 3 },
 };
 
 const VALID_TAGS = new Set(['bug', 'feature request']);
@@ -339,16 +338,10 @@ function buildBatchSummary(rubrics: RubricRecord[], key: BatchKey): BatchSummary
     (rubric) =>
       rubric.tags.length === 1 && VALID_TAGS.has(rubric.tags[0].toLowerCase()),
   ).length;
-  const rest = Math.max(
-    0,
-    validSingleTags - Math.min(bugs, requirement.bugs) - Math.min(features, requirement.features),
-  );
-
   return {
     total: rubrics.length,
     bugs,
     features,
-    rest,
     validSingleTags,
     checks: [
       {
@@ -371,13 +364,6 @@ function buildBatchSummary(rubrics: RubricRecord[], key: BatchKey): BatchSummary
         target: requirement.features,
         pass: features >= requirement.features,
         detail: requirement.features + ' minimum',
-      },
-      {
-        label: 'Rest bugs or features',
-        current: rest,
-        target: requirement.rest,
-        pass: rest >= requirement.rest,
-        detail: requirement.rest + ' minimum',
       },
       {
         label: 'Valid single tags',
@@ -703,7 +689,7 @@ export default function Home() {
                   <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-zinc-500">⌄</span>
                 </div>
                 <span className="mt-2 block text-xs text-zinc-600">
-                  {selectedBatch.bugs} bugs · {selectedBatch.features} features · {selectedBatch.rest} rest
+                  {selectedBatch.bugs} bugs minimum · {selectedBatch.features} feature requests minimum
                 </span>
               </label>
             </div>
