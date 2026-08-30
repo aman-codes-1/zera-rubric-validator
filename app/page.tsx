@@ -426,7 +426,7 @@ function docsBadge(status: AiReview['documentationStatus']) {
 }
 
 export default function Home() {
-  const [application, setApplication] = useState('quickbooks-angular');
+  const [application, setApplication] = useState('quickbooks');
   const [batchKey, setBatchKey] = useState<BatchKey>('a');
   const [jsonInput, setJsonInput] = useState('');
   const [results, setResults] = useState<RubricResult[]>([]);
@@ -658,7 +658,7 @@ export default function Home() {
                     onChange={(event) => setApplication(event.target.value)}
                     className="h-11 w-full appearance-none rounded-xl border border-white/10 bg-[#101317] pr-9 pl-10 text-sm outline-none transition focus:border-emerald-400/50 focus:ring-3 focus:ring-emerald-400/10"
                   >
-                    <option value="quickbooks-angular">quickbooks-angular</option>
+                    <option value="quickbooks">quickbooks</option>
                   </select>
                   <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-zinc-500">⌄</span>
                 </div>
