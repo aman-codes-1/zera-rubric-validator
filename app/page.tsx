@@ -739,7 +739,11 @@ export default function Home() {
                     className="h-11 w-full rounded-xl border-white/10 bg-[#101317] px-3 text-zinc-100 shadow-none hover:bg-[#13171b] focus-visible:border-emerald-400/50 focus-visible:ring-emerald-400/10 data-[size=default]:h-11"
                   >
                     <ShieldCheck aria-hidden="true" className="size-4 text-zinc-500" />
-                    <SelectValue />
+                    <SelectValue>
+                      {(value: BatchKey | null) =>
+                        value ? BATCHES[value].label : 'Select batch requirements'
+                      }
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent
                     align="start"
