@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 
 import next from 'next';
 
+import { PRODUCT_NAME } from '../lib/constants.mjs';
 import { validateWithOpenAI } from '../worker/checkset-worker.js';
 
 const devHost = process.env.ZERA_DEV_HOST || 'localhost';
@@ -67,5 +68,5 @@ createServer(async (request, response) => {
 
   await handleNextRequest(request, response);
 }).listen(devPort, devHost, () => {
-  console.log(`Zera development server ready at http://${devHost}:${devPort}`);
+  console.log(`${PRODUCT_NAME} development server ready at http://${devHost}:${devPort}`);
 });

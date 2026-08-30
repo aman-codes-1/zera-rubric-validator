@@ -43,6 +43,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { PRODUCT_NAME } from '@/lib/constants.mjs';
 
 type BatchKey = 'Batch A' | 'Batch B' | 'Batch C';
 const APPLICATIONS = ['quickbooks', 'workday'] as const;
@@ -761,7 +762,7 @@ export default function Home() {
               <Braces className="size-[18px]" />
             </span>
             <div>
-              <strong className="block text-sm tracking-tight">Zera Feather</strong>
+              <strong className="block text-sm tracking-tight">{PRODUCT_NAME} Feather</strong>
               <span className="block text-xs text-zinc-500">Documentation-grounded rubric QA</span>
             </div>
           </div>
@@ -815,7 +816,7 @@ export default function Home() {
                     Documentation context is prepared before every AI review.
                   </p>
                   <p className="mt-1 text-xs leading-5 text-zinc-400">
-                    Zera retrieves current product documentation at review time. It does not retrain
+                    {PRODUCT_NAME} retrieves current product documentation at review time. It does not retrain
                     the model or store a new model.
                   </p>
                 </div>
@@ -1134,7 +1135,7 @@ export default function Home() {
           >
             <Loader2 aria-hidden="true" className="size-14 animate-spin text-indigo-400" strokeWidth={2.25} />
             <h2 className="mt-7 text-xl font-semibold tracking-tight text-zinc-100 sm:text-2xl">
-              Zera is validating {application} rubrics…
+              {PRODUCT_NAME} is validating {application} rubrics…
             </h2>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 sm:text-base">
               The documentation-grounded semantic and grammar review may take several minutes.
