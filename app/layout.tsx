@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://rhea-review-lab.aman-codes0.chatgpt.site'),
+  metadataBase: new URL('https://zera-review-lab.aman-codes0.chatgpt.site'),
   title: 'Zera CheckSet - Documentation-grounded Rubric QA',
   description:
     'Validate rubric batches, tags, reproduction steps, grammar, and product-documentation alignment.',

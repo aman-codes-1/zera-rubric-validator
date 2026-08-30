@@ -390,6 +390,21 @@ function buildBatchSummary(rubrics: RubricRecord[], key: BatchKey): BatchSummary
   };
 }
 
+function batchFailureMessage(check: BatchSummary['checks'][number]) {
+  if (check.label === 'Rubrics') {
+    const difference = check.target - check.current;
+    return difference > 0
+      ? `Rubrics: ${check.current}/${check.target}. Add ${difference}.`
+      : `Rubrics: ${check.current}/${check.target}. Remove ${Math.abs(difference)}.`;
+  }
+
+  if (check.label === 'Valid single tags') {
+    return `Valid single tags: ${check.current}/${check.target}. Every rubric must have exactly one valid tag.`;
+  }
+
+  return `${check.label}: ${check.current}/${check.target} minimum. Add ${Math.max(0, check.target - check.current)}.`;
+}
+
 function parseInput(value: string) {
   let parsed: unknown;
   try {
@@ -428,9 +443,7 @@ export default function Home() {
   const [application, setApplication] = useState('quickbooks-angular');
   const [batchKey, setBatchKey] = useState<BatchKey>('a');
   const [jsonInput, setJsonInput] = useState('');
-  const [parseErrors, setParseErrors] = useState<string[]>([]);
   const [results, setResults] = useState<RubricResult[]>([]);
-  const [batchSummary, setBatchSummary] = useState<BatchSummary | null>(null);
   const [aiStatus, setAiStatus] = useState<AiStatus>('idle');
   const [aiResponse, setAiResponse] = useState<AiResponse | null>(null);
   const [aiError, setAiError] = useState('');
@@ -446,15 +459,53 @@ export default function Home() {
     [results],
   );
   const selectedBatch = BATCHES[batchKey];
-  const canValidate = Boolean(application && jsonInput.trim() && !isRunning);
+  const hasInput = Boolean(jsonInput.trim());
+  const liveInput = useMemo(() => {
+    if (!jsonInput.trim()) {
+      return { rubrics: [] as RubricRecord[], formatErrors: [] as string[] };
+    }
+
+    try {
+      return { rubrics: parseInput(jsonInput), formatErrors: [] as string[] };
+    } catch (error) {
+      let partialRubrics: RubricRecord[] = [];
+      try {
+        const parsed: unknown = JSON.parse(jsonInput);
+        if (Array.isArray(parsed)) {
+          partialRubrics = parsed.filter(isObject).map(normalizeRubric);
+        }
+      } catch {
+        // Syntax errors cannot provide reliable live batch counts.
+      }
+
+      return {
+        rubrics: partialRubrics,
+        formatErrors:
+          error instanceof JsonFormatError
+            ? error.issues
+            : [error instanceof Error ? error.message : 'The JSON could not be parsed.'],
+      };
+    }
+  }, [jsonInput]);
+  const liveBatchSummary = useMemo(
+    () => buildBatchSummary(liveInput.rubrics, batchKey),
+    [batchKey, liveInput.rubrics],
+  );
+  const failedBatchChecks = liveBatchSummary.checks.filter((check) => !check.pass);
+  const batchRequirementsMet = failedBatchChecks.length === 0;
+  const canValidate = Boolean(
+    application &&
+      hasInput &&
+      liveInput.formatErrors.length === 0 &&
+      batchRequirementsMet &&
+      !isRunning,
+  );
 
   async function loadProvidedExample() {
     const response = await fetch('/sample-rubrics.json');
     const text = await response.text();
     setJsonInput(text);
-    setParseErrors([]);
     setResults([]);
-    setBatchSummary(null);
     setAiResponse(null);
     setAiStatus('idle');
     setAiError('');
@@ -462,33 +513,27 @@ export default function Home() {
 
   function reset() {
     setJsonInput('');
-    setParseErrors([]);
     setResults([]);
-    setBatchSummary(null);
     setAiResponse(null);
     setAiStatus('idle');
     setAiError('');
   }
 
   async function runValidation() {
-    setParseErrors([]);
     setAiError('');
     setAiResponse(null);
 
     let rubrics: RubricRecord[];
     try {
       rubrics = parseInput(jsonInput);
-    } catch (error) {
-      setParseErrors(
-        error instanceof JsonFormatError
-          ? error.issues
-          : [error instanceof Error ? error.message : 'The JSON could not be parsed.'],
-      );
+    } catch {
       setResults([]);
-      setBatchSummary(null);
       setAiStatus('idle');
       return;
     }
+
+    const submittedBatchSummary = buildBatchSummary(rubrics, batchKey);
+    if (!submittedBatchSummary.checks.every((check) => check.pass)) return;
 
     const localResults = rubrics.map((rubric, index) => ({
       index,
@@ -497,7 +542,6 @@ export default function Home() {
     }));
 
     setResults(localResults);
-    setBatchSummary(buildBatchSummary(rubrics, batchKey));
     setIsRunning(true);
     setAiStatus('researching');
 
@@ -536,7 +580,7 @@ export default function Home() {
       {
         application,
         batch: batchKey,
-        batchSummary,
+        batchSummary: liveBatchSummary,
         localResults: results,
         aiReview: aiResponse,
       },
@@ -641,7 +685,13 @@ export default function Home() {
                   <ShieldCheck className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-zinc-500" />
                   <select
                     value={batchKey}
-                    onChange={(event) => setBatchKey(event.target.value as BatchKey)}
+                    onChange={(event) => {
+                      setBatchKey(event.target.value as BatchKey);
+                      setResults([]);
+                      setAiResponse(null);
+                      setAiStatus('idle');
+                      setAiError('');
+                    }}
                     className="h-11 w-full appearance-none rounded-xl border border-white/10 bg-[#101317] pr-9 pl-10 text-sm outline-none transition focus:border-emerald-400/50 focus:ring-3 focus:ring-emerald-400/10"
                   >
                     {Object.entries(BATCHES).map(([key, batch]) => (
@@ -678,14 +728,20 @@ export default function Home() {
               <Textarea
                 id="rubrics-json"
                 value={jsonInput}
-                onChange={(event) => setJsonInput(event.target.value)}
+                onChange={(event) => {
+                  setJsonInput(event.target.value);
+                  setResults([]);
+                  setAiResponse(null);
+                  setAiStatus('idle');
+                  setAiError('');
+                }}
                 placeholder={'[\n  {\n    "criterion": "Home: observable issue",\n    "score": 10,\n    "tags": ["bug"],\n    "forms": { ... }\n  }\n]'}
                 spellCheck={false}
                 className="min-h-[430px] resize-y rounded-none border-0 bg-transparent p-5 font-mono text-[12px] leading-6 text-zinc-300 shadow-none focus-visible:ring-0"
               />
             </div>
 
-            {parseErrors.length > 0 && (
+            {liveInput.formatErrors.length > 0 && (
               <div
                 role="alert"
                 className="flex gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200"
@@ -697,7 +753,7 @@ export default function Home() {
                     Match the structure of the provided rubric JSON file and fix the following:
                   </p>
                   <ul className="mt-2 list-disc space-y-1 pl-4 text-xs leading-5 text-rose-100/90">
-                    {parseErrors.map((issue, index) => (
+                    {liveInput.formatErrors.map((issue, index) => (
                       <li key={`${issue}-${index}`}>{issue}</li>
                     ))}
                   </ul>
@@ -718,6 +774,23 @@ export default function Home() {
     }
   }
 ]`}</pre>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {hasInput && !batchRequirementsMet && (
+              <div
+                role="alert"
+                className="flex gap-3 rounded-xl border border-rose-500/35 bg-rose-500/10 p-4 text-sm text-rose-200"
+              >
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <strong>Batch requirements are not met</strong>
+                  <div className="mt-2 grid gap-x-8 gap-y-1 text-xs leading-5 text-rose-100/90 sm:grid-cols-2">
+                    {failedBatchChecks.map((check) => (
+                      <p key={check.label}>{batchFailureMessage(check)}</p>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -750,27 +823,21 @@ export default function Home() {
                   <p className="text-sm font-medium">Batch requirements</p>
                   <p className="mt-1 text-xs text-zinc-500">{selectedBatch.label}</p>
                 </div>
-                {batchSummary && (
+                {hasInput && (
                   <Badge
                     className={
-                      batchSummary.checks.every((check) => check.pass)
+                      batchRequirementsMet
                         ? 'bg-emerald-400/10 text-emerald-300'
                         : 'bg-rose-400/10 text-rose-300'
                     }
                   >
-                    {batchSummary.checks.every((check) => check.pass) ? 'Passed' : 'Needs work'}
+                    {batchRequirementsMet ? 'Passed' : 'Needs work'}
                   </Badge>
                 )}
               </div>
 
               <div className="mt-4 space-y-2">
-                {(batchSummary?.checks || [
-                  { label: 'Rubrics', current: 0, target: selectedBatch.total, pass: false, detail: 'Exactly ' + selectedBatch.total + ' required' },
-                  { label: 'Bugs', current: 0, target: selectedBatch.bugs, pass: false, detail: selectedBatch.bugs + ' minimum' },
-                  { label: 'Feature requests', current: 0, target: selectedBatch.features, pass: false, detail: selectedBatch.features + ' minimum' },
-                  { label: 'Rest bugs or features', current: 0, target: selectedBatch.rest, pass: false, detail: selectedBatch.rest + ' minimum' },
-                  { label: 'Valid single tags', current: 0, target: 0, pass: true, detail: 'One valid tag per rubric' },
-                ]).map((check) => (
+                {liveBatchSummary.checks.map((check) => (
                   <div
                     key={check.label}
                     className="flex items-center justify-between gap-4 rounded-xl border border-white/7 bg-white/[0.02] px-3.5 py-3"
@@ -783,7 +850,7 @@ export default function Home() {
                       <span className="font-mono text-xs text-zinc-400">
                         {check.current}/{check.target}
                       </span>
-                      {batchSummary &&
+                      {hasInput &&
                         (check.pass ? (
                           <CheckCircle2 className="size-4 text-emerald-400" />
                         ) : (
