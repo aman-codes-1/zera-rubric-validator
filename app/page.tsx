@@ -396,7 +396,9 @@ function parseInput(value: string) {
   try {
     parsed = JSON.parse(value);
   } catch {
-    throw new JsonFormatError(['The JSON is invalid. Check the format and try again.']);
+    throw new JsonFormatError([
+      'The JSON array or object syntax is incorrect. Check brackets, braces, commas, and quotation marks.',
+    ]);
   }
 
   if (!Array.isArray(parsed)) {
