@@ -603,6 +603,13 @@ export default function Home() {
     setResults([]);
     setIsRunning(true);
     setAiStatus('researching');
+    window.requestAnimationFrame(() => {
+      const loadingPanel = document.getElementById('validation-progress');
+      loadingPanel?.scrollIntoView({
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+        block: 'center',
+      });
+    });
 
     try {
       const response = await fetch('/api/validate', {
@@ -1043,6 +1050,7 @@ export default function Home() {
 
         {isRunning && (
           <section
+            id="validation-progress"
             role="status"
             aria-live="polite"
             aria-busy="true"
