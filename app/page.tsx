@@ -887,10 +887,11 @@ export default function Home() {
               <Button
                 onClick={runValidation}
                 disabled={!canValidate}
-                className="h-11 bg-emerald-400 px-5 font-semibold text-[#06251a] hover:bg-emerald-300 disabled:bg-zinc-800 disabled:text-zinc-500"
+                aria-busy={isRunning}
+                className="h-11 min-w-40 bg-emerald-400 px-5 font-semibold text-[#06251a] hover:bg-emerald-300 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
               >
                 {isRunning ? <Loader2 className="animate-spin" /> : <Play />}
-                Validate Rubrics
+                {isRunning ? 'Validating' : 'Validate Rubrics'}
               </Button>
               <Button
                 variant="outline"
@@ -997,6 +998,24 @@ export default function Home() {
             </div>
           </aside>
         </div>
+
+        {isRunning && (
+          <section
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+            className="mt-10 flex min-h-64 flex-col items-center justify-center rounded-2xl border border-white/8 bg-[#090b0e] px-6 py-12 text-center"
+          >
+            <Loader2 aria-hidden="true" className="size-14 animate-spin text-indigo-400" strokeWidth={2.25} />
+            <h2 className="mt-7 text-xl font-semibold tracking-tight text-zinc-100 sm:text-2xl">
+              Zera is validating {application} rubrics…
+            </h2>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 sm:text-base">
+              The documentation-grounded semantic and grammar review may take several minutes.
+              Keep this page open while validation is in progress.
+            </p>
+          </section>
+        )}
 
         {aiStatus === 'ready' && aiResponse && results.length > 0 && (
           <section className="mt-10 border-t border-white/8 pt-8">
