@@ -107,6 +107,12 @@ type AiResponse = {
   sources: Array<{ title: string; url: string }>;
 };
 
+type ValidationApiPayload = Partial<AiResponse> & {
+  error?: string;
+  responseId?: string;
+  status?: 'queued' | 'in_progress';
+};
+
 const BATCHES: Record<
   BatchKey,
   { label: string; total: number; bugs: number; features: number }
@@ -117,6 +123,7 @@ const BATCHES: Record<
 };
 
 const VALID_TAGS = new Set(['bug', 'feature request']);
+const VALIDATION_POLL_INTERVAL_MS = 2000;
 const RUBRIC_KEYS = ['criterion', 'score', 'tags', 'forms'] as const;
 const FORM_KEYS = [
   'page_or_workflow',
@@ -457,6 +464,25 @@ function docsBadge(status: AiReview['documentationStatus']) {
   return 'border-amber-500/30 bg-amber-500/10 text-amber-300';
 }
 
+async function readValidationPayload(response: Response): Promise<ValidationApiPayload> {
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    throw new Error('AI documentation review is temporarily unavailable. Please try again.');
+  }
+
+  try {
+    return (await response.json()) as ValidationApiPayload;
+  } catch {
+    throw new Error('AI documentation review is temporarily unavailable. Please try again.');
+  }
+}
+
+function waitForNextValidationPoll() {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, VALIDATION_POLL_INTERVAL_MS);
+  });
+}
+
 function statusFindings(review: AiReview | undefined, rubric: RubricRecord): Issue[] {
   if (!review) return [];
 
@@ -689,7 +715,7 @@ export default function Home() {
     });
 
     try {
-      const response = await fetch('/api/validate', {
+      let response = await fetch('/api/validate', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -698,25 +724,29 @@ export default function Home() {
           rubrics,
         }),
       });
-      const contentType = response.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        throw new Error('AI documentation review is temporarily unavailable. Please try again.');
-      }
+      let payload = await readValidationPayload(response);
 
-      let payload: AiResponse & { error?: string };
-      try {
-        payload = (await response.json()) as AiResponse & { error?: string };
-      } catch {
-        throw new Error('AI documentation review is temporarily unavailable. Please try again.');
+      while (response.status === 202) {
+        if (!payload.responseId) {
+          throw new Error('The AI review did not return a response ID. Validation was not completed.');
+        }
+
+        await waitForNextValidationPoll();
+        response = await fetch(
+          `/api/validate?responseId=${encodeURIComponent(payload.responseId)}`,
+          { cache: 'no-store' },
+        );
+        payload = await readValidationPayload(response);
       }
 
       if (!response.ok) {
         throw new Error(payload.error || 'AI documentation review is unavailable.');
       }
 
+      const rubricReviews = payload.rubricReviews;
       if (
-        !Array.isArray(payload.rubricReviews) ||
-        rubrics.some((_, index) => !payload.rubricReviews.some((review) => review.index === index))
+        !Array.isArray(rubricReviews) ||
+        rubrics.some((_, index) => !rubricReviews.some((review) => review.index === index))
       ) {
         throw new Error('The AI review returned incomplete results. Validation was not completed.');
       }
@@ -728,7 +758,7 @@ export default function Home() {
       }));
 
       setResults(validatedResults);
-      setAiResponse(payload);
+      setAiResponse(payload as AiResponse);
       setAiStatus('ready');
     } catch (error) {
       setResults([]);
@@ -1139,7 +1169,6 @@ export default function Home() {
             </h2>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 sm:text-base">
               The documentation-grounded semantic and grammar review may take several minutes.
-              Keep this page open while validation is in progress.
             </p>
           </section>
         )}

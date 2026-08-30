@@ -151,6 +151,48 @@ const reviewSchema = {
   },
 };
 
+function reviewResponse(responsePayload) {
+  if (responsePayload.status === 'queued' || responsePayload.status === 'in_progress') {
+    return json(
+      {
+        responseId: responsePayload.id,
+        status: responsePayload.status,
+      },
+      202,
+    );
+  }
+
+  if (responsePayload.status !== 'completed') {
+    return json(
+      {
+        error:
+          responsePayload?.error?.message ||
+          responsePayload?.incomplete_details?.reason ||
+          'OpenAI could not complete the documentation review.',
+        code: 'openai_response_not_completed',
+      },
+      502,
+    );
+  }
+
+  const outputText = getOutputText(responsePayload);
+  if (!outputText) {
+    return json({ error: 'OpenAI returned no structured review.' }, 502);
+  }
+
+  let review;
+  try {
+    review = JSON.parse(outputText);
+  } catch {
+    return json({ error: 'OpenAI returned an unreadable structured review.' }, 502);
+  }
+
+  return json({
+    ...review,
+    sources: getSources(responsePayload),
+  });
+}
+
 export async function validateWithOpenAI(request, env) {
   if (!env.OPENAI_API_KEY) {
     return json(
@@ -227,7 +269,8 @@ export async function validateWithOpenAI(request, env) {
           schema: reviewSchema,
         },
       },
-      store: false,
+      background: true,
+      store: true,
     }),
   });
 
@@ -245,22 +288,54 @@ export async function validateWithOpenAI(request, env) {
     );
   }
 
-  const outputText = getOutputText(responsePayload);
-  if (!outputText) {
-    return json({ error: 'OpenAI returned no structured review.' }, 502);
+  return reviewResponse(responsePayload);
+}
+
+export async function retrieveOpenAIReview(request, env) {
+  if (!env.OPENAI_API_KEY) {
+    return json(
+      {
+        error: 'OpenAI review is not configured yet. Validation was not completed.',
+        code: 'missing_openai_api_key',
+      },
+      503,
+    );
   }
 
-  let review;
-  try {
-    review = JSON.parse(outputText);
-  } catch {
-    return json({ error: 'OpenAI returned an unreadable structured review.' }, 502);
+  const responseId = new URL(request.url).searchParams.get('responseId') || '';
+  if (!/^resp_[A-Za-z0-9_-]+$/.test(responseId)) {
+    return json({ error: 'A valid validation response ID is required.' }, 400);
   }
 
-  return json({
-    ...review,
-    sources: getSources(responsePayload),
-  });
+  const openAIResponse = await fetch(
+    `${OPENAI_RESPONSES_URL}/${encodeURIComponent(responseId)}?include=web_search_call.action.sources`,
+    {
+      headers: {
+        authorization: 'Bearer ' + env.OPENAI_API_KEY,
+      },
+    },
+  );
+  const responsePayload = await openAIResponse.json();
+
+  if (!openAIResponse.ok) {
+    return json(
+      {
+        error:
+          responsePayload?.error?.message ||
+          'OpenAI could not retrieve the documentation review.',
+        code: 'openai_retrieval_failed',
+      },
+      openAIResponse.status,
+    );
+  }
+
+  return reviewResponse(responsePayload);
+}
+
+export async function handleValidationRequest(request, env) {
+  if (request.method === 'POST') return validateWithOpenAI(request, env);
+  if (request.method === 'GET') return retrieveOpenAIReview(request, env);
+  return json({ error: 'Method not allowed.' }, 405);
 }
 
 async function serveAssets(request, env) {
@@ -286,10 +361,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/api/validate' || url.pathname === '/api/validate/') {
-      if (request.method !== 'POST') {
-        return json({ error: 'Method not allowed.' }, 405);
-      }
-      return validateWithOpenAI(request, env);
+      return handleValidationRequest(request, env);
     }
 
     return serveAssets(request, env);

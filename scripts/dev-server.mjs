@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import next from 'next';
 
 import { PRODUCT_NAME } from '../lib/constants.mjs';
-import { validateWithOpenAI } from '../worker/feather-worker.js';
+import { handleValidationRequest } from '../worker/feather-worker.js';
 
 const devHost = process.env.ZERA_DEV_HOST || 'localhost';
 const devPort = Number(process.env.ZERA_DEV_PORT || 3000);
@@ -19,13 +19,15 @@ createServer(async (request, response) => {
   );
 
   if (
-    request.method === 'POST' &&
+    (request.method === 'POST' || request.method === 'GET') &&
     (requestUrl.pathname === '/api/validate' ||
       requestUrl.pathname === '/api/validate/')
   ) {
     try {
       const bodyChunks = [];
-      for await (const chunk of request) bodyChunks.push(chunk);
+      if (request.method === 'POST') {
+        for await (const chunk of request) bodyChunks.push(chunk);
+      }
 
       const headers = new Headers();
       for (const [name, value] of Object.entries(request.headers)) {
@@ -36,11 +38,13 @@ createServer(async (request, response) => {
         }
       }
 
-      const apiResponse = await validateWithOpenAI(
+      const apiResponse = await handleValidationRequest(
         new Request(requestUrl, {
-          method: 'POST',
+          method: request.method,
           headers,
-          body: Buffer.concat(bodyChunks),
+          ...(request.method === 'POST'
+            ? { body: Buffer.concat(bodyChunks) }
+            : {}),
         }),
         {
           OPENAI_API_KEY: process.env.OPENAI_API_KEY,
