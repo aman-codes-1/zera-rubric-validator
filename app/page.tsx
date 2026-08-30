@@ -25,6 +25,22 @@ import {
 
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import {
+  Combobox,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxList,
+} from '@/components/ui/combobox';
+import { InputGroupAddon } from '@/components/ui/input-group';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 
 type BatchKey = 'a' | 'b' | 'c';
@@ -662,28 +678,43 @@ export default function Home() {
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block">
                 <span className="mb-2 block text-xs font-medium text-zinc-300">Application</span>
-                <div className="relative">
-                  <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-zinc-500" />
-                  <select
-                    value={application}
-                    onChange={(event) => {
-                      setApplication(event.target.value as Application);
+                <Combobox
+                  items={APPLICATIONS}
+                  value={application}
+                  onValueChange={(value) => {
+                    if (value) {
+                      setApplication(value as Application);
                       setResults([]);
                       setAiResponse(null);
                       setAiStatus('idle');
                       setAiError('');
-                    }}
-                    className="h-11 w-full appearance-none rounded-xl border border-white/10 bg-[#101317] pr-9 pl-10 text-sm outline-none transition focus:border-emerald-400/50 focus:ring-3 focus:ring-emerald-400/10"
+                    }
+                  }}
+                >
+                  <ComboboxInput
+                    aria-label="Search supported applications"
+                    placeholder="Search supported apps..."
+                    className="h-11 w-full rounded-xl border-white/10 bg-[#101317] shadow-none transition focus-within:border-indigo-400/70 focus-within:ring-3 focus-within:ring-indigo-400/15 [&_input]:h-full [&_input]:font-mono [&_input]:text-zinc-100 [&_input]:placeholder:text-zinc-600"
                   >
-                    {APPLICATIONS.map((item) => (
-                      <option key={item} value={item}>{item}</option>
-                    ))}
-                  </select>
-                  <ChevronDown
-                    aria-hidden="true"
-                    className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-zinc-500"
-                  />
-                </div>
+                    <InputGroupAddon align="inline-start" className="pl-3 pr-0 text-zinc-500">
+                      <Search aria-hidden="true" className="size-4" />
+                    </InputGroupAddon>
+                  </ComboboxInput>
+                  <ComboboxContent className="border border-white/10 bg-[#101317] p-1 text-zinc-100 shadow-2xl ring-0">
+                    <ComboboxEmpty className="py-3 text-zinc-500">No application found.</ComboboxEmpty>
+                    <ComboboxList>
+                      {APPLICATIONS.map((item) => (
+                        <ComboboxItem
+                          key={item}
+                          value={item}
+                          className="min-h-9 px-3 font-mono data-highlighted:bg-indigo-400/15 data-highlighted:text-indigo-100"
+                        >
+                          {item}
+                        </ComboboxItem>
+                      ))}
+                    </ComboboxList>
+                  </ComboboxContent>
+                </Combobox>
                 <span className="mt-2 block text-xs text-zinc-600">
                   {APPLICATIONS.length} supported applications
                 </span>
@@ -691,30 +722,42 @@ export default function Home() {
 
               <label className="block">
                 <span className="mb-2 block text-xs font-medium text-zinc-300">Batch requirements</span>
-                <div className="relative">
-                  <ShieldCheck className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-zinc-500" />
-                  <select
-                    value={batchKey}
-                    onChange={(event) => {
-                      setBatchKey(event.target.value as BatchKey);
+                <Select
+                  value={batchKey}
+                  onValueChange={(value) => {
+                    if (value) {
+                      setBatchKey(value as BatchKey);
                       setResults([]);
                       setAiResponse(null);
                       setAiStatus('idle');
                       setAiError('');
-                    }}
-                    className="h-11 w-full appearance-none rounded-xl border border-white/10 bg-[#101317] pr-9 pl-10 text-sm outline-none transition focus:border-emerald-400/50 focus:ring-3 focus:ring-emerald-400/10"
+                    }
+                  }}
+                >
+                  <SelectTrigger
+                    aria-label="Batch requirements"
+                    className="h-11 w-full rounded-xl border-white/10 bg-[#101317] px-3 text-zinc-100 shadow-none hover:bg-[#13171b] focus-visible:border-emerald-400/50 focus-visible:ring-emerald-400/10 data-[size=default]:h-11"
+                  >
+                    <ShieldCheck aria-hidden="true" className="size-4 text-zinc-500" />
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent
+                    align="start"
+                    alignItemWithTrigger={false}
+                    sideOffset={6}
+                    className="border border-white/10 bg-[#101317] p-1 text-zinc-100 shadow-2xl ring-0"
                   >
                     {Object.entries(BATCHES).map(([key, batch]) => (
-                      <option key={key} value={key}>
+                      <SelectItem
+                        key={key}
+                        value={key}
+                        className="min-h-9 px-3 font-mono focus:bg-indigo-400/15 focus:text-indigo-100"
+                      >
                         {batch.label}
-                      </option>
+                      </SelectItem>
                     ))}
-                  </select>
-                  <ChevronDown
-                    aria-hidden="true"
-                    className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-zinc-500"
-                  />
-                </div>
+                  </SelectContent>
+                </Select>
                 <span className="mt-2 block text-xs text-zinc-600">
                   {selectedBatch.bugs} bugs minimum · {selectedBatch.features} feature requests minimum
                 </span>
