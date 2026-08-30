@@ -550,13 +550,7 @@ export default function Home() {
     const submittedBatchSummary = buildBatchSummary(rubrics, batchKey);
     if (!submittedBatchSummary.checks.every((check) => check.pass)) return;
 
-    const localResults = rubrics.map((rubric, index) => ({
-      index,
-      rubric,
-      issues: validateRubric(rubric),
-    }));
-
-    setResults(localResults);
+    setResults([]);
     setIsRunning(true);
     setAiStatus('researching');
 
@@ -586,14 +580,30 @@ export default function Home() {
         throw new Error(payload.error || 'AI documentation review is unavailable.');
       }
 
+      if (
+        !Array.isArray(payload.rubricReviews) ||
+        rubrics.some((_, index) => !payload.rubricReviews.some((review) => review.index === index))
+      ) {
+        throw new Error('The AI review returned incomplete results. Validation was not completed.');
+      }
+
+      const validatedResults = rubrics.map((rubric, index) => ({
+        index,
+        rubric,
+        issues: validateRubric(rubric),
+      }));
+
+      setResults(validatedResults);
       setAiResponse(payload);
       setAiStatus('ready');
     } catch (error) {
+      setResults([]);
+      setAiResponse(null);
       setAiStatus('unavailable');
       setAiError(
         error instanceof Error
           ? error.message
-          : 'AI documentation review is unavailable. Local validation still completed.',
+          : 'AI documentation review is unavailable. Validation was not completed.',
       );
     } finally {
       setIsRunning(false);
@@ -606,7 +616,7 @@ export default function Home() {
         application,
         batch: batchKey,
         batchSummary: liveBatchSummary,
-        localResults: results,
+        validationResults: results,
         aiReview: aiResponse,
       },
       null,
@@ -988,16 +998,16 @@ export default function Home() {
           </aside>
         </div>
 
-        {results.length > 0 && (
+        {aiStatus === 'ready' && aiResponse && results.length > 0 && (
           <section className="mt-10 border-t border-white/8 pt-8">
             <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-600">Validation report</p>
                 <h2 className="mt-2 text-2xl font-semibold tracking-tight">
-                  {failingRubrics} failing rubrics · {issueCount} local findings
+                  {failingRubrics} failing rubrics · {issueCount} findings
                 </h2>
                 <p className="mt-2 text-sm text-zinc-500">
-                  Deterministic checks are shown immediately; documentation and grammar findings appear when AI review is available.
+                  Structural, documentation, and grammar findings are shown only after the complete API review succeeds.
                 </p>
               </div>
               <Button
@@ -1112,13 +1122,7 @@ export default function Home() {
                           )}
                         </div>
 
-                        {aiStatus === 'researching' && (
-                          <div className="mt-3 flex items-center gap-2 rounded-xl border border-indigo-400/15 bg-indigo-400/[0.04] p-3 text-xs text-indigo-200">
-                            <Loader2 className="size-4 animate-spin" /> Reviewing against documentation…
-                          </div>
-                        )}
-
-                        {aiReview ? (
+                        {aiReview && (
                           <div className="mt-3 space-y-3">
                             <p className="rounded-xl border border-white/7 bg-white/[0.02] p-3 text-xs leading-5 text-zinc-400">
                               {aiReview.documentationSummary}
@@ -1134,15 +1138,7 @@ export default function Home() {
                               </div>
                             ))}
                           </div>
-                        ) : aiStatus === 'unavailable' ? (
-                          <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/[0.05] p-3 text-xs leading-5 text-amber-200">
-                            Local validation completed. Connect an OpenAI API key to enable documentation and grammar review.
-                          </div>
-                        ) : aiStatus !== 'researching' ? (
-                          <div className="mt-3 rounded-xl border border-white/7 bg-white/[0.02] p-3 text-xs text-zinc-600">
-                            Run validation to start the documentation review.
-                          </div>
-                        ) : null}
+                        )}
                       </div>
                     </div>
                   </details>
