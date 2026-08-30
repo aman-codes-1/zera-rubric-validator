@@ -376,7 +376,10 @@ function buildBatchSummary(rubrics: RubricRecord[], key: BatchKey): BatchSummary
   };
 }
 
-function batchFailureMessage(check: BatchSummary['checks'][number]) {
+function batchFailureMessage(
+  check: BatchSummary['checks'][number],
+  summary: BatchSummary,
+) {
   if (check.label === 'Rubrics') {
     const difference = check.target - check.current;
     return difference > 0
@@ -385,6 +388,10 @@ function batchFailureMessage(check: BatchSummary['checks'][number]) {
   }
 
   if (check.label === 'Valid single tags') {
+    const rubricsCheck = summary.checks.find((item) => item.label === 'Rubrics');
+    if (rubricsCheck && !rubricsCheck.pass) {
+      return `Valid single tags: ${check.current}/${check.target}. Complete the required rubric count before checking tag coverage.`;
+    }
     return `Valid single tags: ${check.current}/${check.target}. Every rubric must have exactly one valid tag.`;
   }
 
@@ -776,7 +783,7 @@ export default function Home() {
                   <strong>Batch requirements are not met</strong>
                   <div className="mt-2 grid gap-x-8 gap-y-1 text-xs leading-5 text-rose-100/90 sm:grid-cols-2">
                     {failedBatchChecks.map((check) => (
-                      <p key={check.label}>{batchFailureMessage(check)}</p>
+                      <p key={check.label}>{batchFailureMessage(check, liveBatchSummary)}</p>
                     ))}
                   </div>
                 </div>
