@@ -91,10 +91,13 @@ type BatchSummary = {
 
 type AiReview = {
   index: number;
+  inferredTag: 'bug' | 'feature request' | 'unclear';
+  criterionSection: string;
+  sectionMatch: 'match' | 'mismatch' | 'unclear';
   documentationStatus: 'supported' | 'unclear' | 'not_found';
   documentationSummary: string;
-  grammarIssues: string[];
-  suggestions: string[];
+  findings: Issue[];
+  correctedRubric: RubricRecord;
 };
 
 type AiResponse = {
@@ -465,14 +468,61 @@ export default function Home() {
   const [isRunning, setIsRunning] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const issueCount = useMemo(
-    () => results.reduce((total, result) => total + result.issues.length, 0),
-    [results],
+  const reviewedResults = useMemo(
+    () =>
+      results.map((result) => {
+        const aiReview = aiResponse?.rubricReviews.find((review) => review.index === result.index);
+        const findings = [...result.issues, ...(aiReview?.findings || [])];
+        return {
+          ...result,
+          aiReview,
+          findings,
+          errorCount: findings.filter((finding) => finding.severity === 'error').length,
+          warningCount: findings.filter((finding) => finding.severity === 'warning').length,
+        };
+      }),
+    [aiResponse, results],
   );
-  const failingRubrics = useMemo(
-    () => results.filter((result) => result.issues.some((issue) => issue.severity === 'error')).length,
-    [results],
+  const validationMetrics = useMemo(
+    () => {
+      const errors = reviewedResults.reduce((total, result) => total + result.errorCount, 0);
+      const warnings = reviewedResults.reduce((total, result) => total + result.warningCount, 0);
+      const needFix = reviewedResults.filter((result) => result.findings.length > 0).length;
+
+      return {
+        errors,
+        warnings,
+        needFix,
+        valid: reviewedResults.length - needFix,
+        outcome: errors > 0 ? 'failed' : warnings > 0 ? 'warning' : 'pass',
+      } as const;
+    },
+    [reviewedResults],
   );
+  const outcomePresentation =
+    validationMetrics.outcome === 'failed'
+      ? {
+          label: 'Failed to pass',
+          submission: 'Not ready to submit',
+          description: `This batch contains ${validationMetrics.errors} error${validationMetrics.errors === 1 ? '' : 's'} that must be fixed before submission. Review the affected rubrics below.`,
+          badgeClass: 'border-rose-500/25 bg-rose-500/12 text-rose-300',
+          submissionClass: 'border-rose-500/20 bg-rose-500/8 text-rose-200',
+        }
+      : validationMetrics.outcome === 'warning'
+        ? {
+            label: 'Pass with warnings',
+            submission: 'Review before submit',
+            description: `This batch passes the required rules, but has ${validationMetrics.warnings} warning${validationMetrics.warnings === 1 ? '' : 's'} to review before submission.`,
+            badgeClass: 'border-amber-500/25 bg-amber-500/12 text-amber-300',
+            submissionClass: 'border-amber-500/20 bg-amber-500/8 text-amber-200',
+          }
+        : {
+            label: 'Pass',
+            submission: 'Ready to submit',
+            description: `This batch meets the required rubric rules for ${application}. No changes are required before submission.`,
+            badgeClass: 'border-emerald-500/25 bg-emerald-500/12 text-emerald-300',
+            submissionClass: 'border-emerald-500/20 bg-emerald-500/8 text-emerald-200',
+          };
   const selectedBatch = BATCHES[batchKey];
   const hasInput = Boolean(jsonInput.trim());
   const liveInput = useMemo(() => {
@@ -610,19 +660,11 @@ export default function Home() {
     }
   }
 
-  async function copyReport() {
-    const report = JSON.stringify(
-      {
-        application,
-        batch: batchKey,
-        batchSummary: liveBatchSummary,
-        validationResults: results,
-        aiReview: aiResponse,
-      },
-      null,
-      2,
+  async function copyCorrectedJson() {
+    const correctedRubrics = reviewedResults.map(
+      (result) => result.aiReview?.correctedRubric || result.rubric,
     );
-    await navigator.clipboard.writeText(report);
+    await navigator.clipboard.writeText(JSON.stringify(correctedRubrics, null, 2));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
   }
@@ -1019,32 +1061,81 @@ export default function Home() {
 
         {aiStatus === 'ready' && aiResponse && results.length > 0 && (
           <section className="mt-10 border-t border-white/8 pt-8">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-600">Validation report</p>
-                <h2 className="mt-2 text-2xl font-semibold tracking-tight">
-                  {failingRubrics} failing rubrics · {issueCount} findings
-                </h2>
-                <p className="mt-2 text-sm text-zinc-500">
-                  Structural, documentation, and grammar findings are shown only after the complete API review succeeds.
-                </p>
+            <div className="rounded-2xl border border-white/10 bg-[#0d1013] p-5 sm:p-6">
+              <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge className={'border px-3 py-1 text-xs font-semibold uppercase tracking-wide ' + outcomePresentation.badgeClass}>
+                      {outcomePresentation.label}
+                    </Badge>
+                    <Badge className={'border px-3 py-1 text-xs ' + outcomePresentation.submissionClass}>
+                      {outcomePresentation.submission}
+                    </Badge>
+                    <Badge className="border border-indigo-400/20 bg-indigo-400/10 px-3 py-1 font-mono text-xs text-indigo-300">
+                      {application}
+                    </Badge>
+                  </div>
+                  <p className="mt-4 max-w-4xl text-base font-medium leading-7 text-zinc-200">
+                    {outcomePresentation.description}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={copyCorrectedJson}
+                  className="shrink-0 border-indigo-400/35 bg-transparent text-indigo-300 hover:bg-indigo-400/10 hover:text-indigo-200"
+                >
+                  {copied ? <Check /> : <Copy />}
+                  {copied ? 'Corrected JSON copied' : 'Copy corrected JSON'}
+                </Button>
               </div>
-              <Button
-                variant="outline"
-                onClick={copyReport}
-                className="border-white/10 bg-transparent text-zinc-300 hover:bg-white/5 hover:text-white"
-              >
-                {copied ? <Check /> : <Copy />}
-                {copied ? 'Copied' : 'Copy report'}
-              </Button>
             </div>
 
-            <div className="mt-6 space-y-3">
-              {results.map((result) => {
-                const aiReview = aiResponse?.rubricReviews.find((review) => review.index === result.index);
-                const hasErrors = result.issues.some((issue) => issue.severity === 'error');
-                const aiIssueCount =
-                  (aiReview?.grammarIssues.length || 0) + (aiReview?.suggestions.length || 0);
+            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-7">
+              {[
+                { label: 'Rubrics', value: liveBatchSummary.total, color: 'text-zinc-100' },
+                { label: 'Bugs', value: liveBatchSummary.bugs, color: 'text-rose-300' },
+                { label: 'Feature requests', value: liveBatchSummary.features, color: 'text-indigo-300' },
+                { label: 'Valid', value: validationMetrics.valid, color: 'text-emerald-300' },
+                { label: 'Need fix', value: validationMetrics.needFix, color: 'text-amber-300' },
+                { label: 'Errors', value: validationMetrics.errors, color: 'text-rose-300' },
+                { label: 'Warnings', value: validationMetrics.warnings, color: 'text-amber-300' },
+              ].map((metric) => (
+                <div
+                  key={metric.label}
+                  className="rounded-2xl border border-white/10 bg-[#0d1013] px-4 py-5 text-center"
+                >
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-600">
+                    {metric.label}
+                  </p>
+                  <p className={'mt-2 text-3xl font-semibold tabular-nums ' + metric.color}>{metric.value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-8 flex items-end justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-600">Validation report</p>
+                <h2 className="mt-2 text-2xl font-semibold tracking-tight">Rubric results</h2>
+              </div>
+              <p className="hidden text-xs text-zinc-600 sm:block">Select a rubric to inspect every check</p>
+            </div>
+
+            <div className="mt-5 space-y-3">
+              {reviewedResults.map((result) => {
+                const hasErrors = result.errorCount > 0;
+                const hasWarnings = result.warningCount > 0;
+                const statusLabel = hasErrors
+                  ? 'Failed to pass'
+                  : hasWarnings
+                    ? 'Pass with warnings'
+                    : 'Valid';
+                const statusClass = hasErrors
+                  ? 'border-rose-500/25 bg-rose-500/10 text-rose-300'
+                  : hasWarnings
+                    ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                    : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
+                const criterionSection =
+                  result.aiReview?.criterionSection || result.rubric.criterion.split(':')[0] || 'Unknown';
 
                 return (
                   <details
@@ -1052,113 +1143,142 @@ export default function Home() {
                     className="group overflow-hidden rounded-2xl border border-white/10 bg-[#0d1013]"
                     open={result.index === 0}
                   >
-                    <summary className="flex cursor-pointer list-none items-start justify-between gap-4 px-5 py-4">
+                    <summary className="flex cursor-pointer list-none items-start justify-between gap-4 px-5 py-5">
                       <div className="flex min-w-0 gap-3">
                         <span
                           className={
-                            'mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg ' +
+                            'mt-0.5 grid size-9 shrink-0 place-items-center rounded-xl ' +
                             (hasErrors
                               ? 'bg-rose-500/10 text-rose-300'
-                              : 'bg-emerald-500/10 text-emerald-300')
+                              : hasWarnings
+                                ? 'bg-amber-500/10 text-amber-300'
+                                : 'bg-emerald-500/10 text-emerald-300')
                           }
                         >
-                          {hasErrors ? <AlertTriangle className="size-4" /> : <BadgeCheck className="size-4" />}
+                          {hasErrors ? (
+                            <XCircle className="size-[18px]" />
+                          ) : hasWarnings ? (
+                            <AlertTriangle className="size-[18px]" />
+                          ) : (
+                            <BadgeCheck className="size-[18px]" />
+                          )}
                         </span>
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-mono text-xs text-zinc-600">#{result.index + 1}</span>
-                            {result.rubric.tags.map((tag) => (
-                              <Badge key={tag} className="border border-white/10 bg-white/5 text-zinc-300">
-                                {tag}
-                              </Badge>
-                            ))}
+                            <span className="font-mono text-xs text-zinc-500">#{result.index + 1}</span>
+                            <Badge className={'border text-[10px] ' + statusClass}>{statusLabel}</Badge>
                             <span className="text-xs text-zinc-600">
-                              {result.issues.length + aiIssueCount} findings
+                              {result.errorCount} errors · {result.warningCount} warnings
                             </span>
                           </div>
-                          <p className="mt-2 line-clamp-2 text-sm leading-5 text-zinc-200">
+                          <p className="mt-2 line-clamp-2 text-sm font-medium leading-5 text-zinc-200">
                             {result.rubric.criterion || 'Missing criterion'}
                           </p>
                         </div>
                       </div>
-                      <ChevronDown
-                        aria-hidden="true"
-                        className="size-4 text-zinc-600 transition group-open:rotate-180"
-                      />
+                      <div className="flex shrink-0 items-center gap-4">
+                        <div className="hidden text-right md:block">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Criterion section</p>
+                          <p className="mt-1 text-xs font-medium text-emerald-300">{criterionSection}</p>
+                        </div>
+                        <ChevronDown
+                          aria-hidden="true"
+                          className="size-4 text-zinc-600 transition group-open:rotate-180"
+                        />
+                      </div>
                     </summary>
 
-                    <div className="grid gap-5 border-t border-white/8 px-5 py-5 lg:grid-cols-2">
+                    <div className="space-y-6 border-t border-white/8 px-5 py-5">
                       <div>
-                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-600">
-                          Structural checks
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Criterion</p>
+                        <p className="mt-2 text-sm leading-6 text-zinc-200">{result.rubric.criterion}</p>
+                        <div className="mt-4 flex flex-wrap gap-x-8 gap-y-2 text-xs text-zinc-500">
+                          <p>Declared tag: <strong className="text-zinc-300">{result.rubric.tags.join(', ') || 'missing'}</strong></p>
+                          <p>Inferred tag: <strong className="text-indigo-300">{result.aiReview?.inferredTag || 'unclear'}</strong></p>
+                          <p>Section match: <strong className="text-zinc-300">{result.aiReview?.sectionMatch || 'unclear'}</strong></p>
+                        </div>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="rounded-xl border border-white/7 bg-white/[0.02] p-4">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Page or workflow</p>
+                          <p className="mt-2 text-xs leading-5 text-zinc-300">{result.rubric.forms.page_or_workflow}</p>
+                        </div>
+                        <div className="rounded-xl border border-white/7 bg-white/[0.02] p-4">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Reproduction steps</p>
+                          <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-zinc-300">{result.rubric.forms.reproduction_steps}</p>
+                        </div>
+                        <div className="rounded-xl border border-white/7 bg-white/[0.02] p-4">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Expected behavior</p>
+                          <p className="mt-2 text-xs leading-5 text-zinc-300">{result.rubric.forms.expected_behavior}</p>
+                        </div>
+                        <div className="rounded-xl border border-white/7 bg-white/[0.02] p-4">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Actual behavior</p>
+                          <p className="mt-2 text-xs leading-5 text-zinc-300">{result.rubric.forms.actual_behavior}</p>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Documentation review</p>
+                          {result.aiReview && (
+                            <Badge className={docsBadge(result.aiReview.documentationStatus)}>
+                              {result.aiReview.documentationStatus.replace('_', ' ')}
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="mt-3 rounded-xl border border-white/7 bg-white/[0.02] p-4 text-xs leading-5 text-zinc-400">
+                          {result.aiReview?.documentationSummary}
                         </p>
-                        <div className="mt-3 space-y-2">
-                          {result.issues.length ? (
-                            result.issues.map((issue, issueIndex) => (
+                      </div>
+
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Findings and corrections</p>
+                        {result.findings.length > 0 ? (
+                          <div className="mt-3 space-y-2">
+                            {result.findings.map((finding, findingIndex) => (
                               <div
-                                key={issue.field + issueIndex}
+                                key={`${finding.field}-${findingIndex}`}
                                 className={
-                                  'rounded-xl border p-3 ' +
-                                  (issue.severity === 'error'
+                                  'rounded-xl border p-4 ' +
+                                  (finding.severity === 'error'
                                     ? 'border-rose-500/20 bg-rose-500/[0.06]'
                                     : 'border-amber-500/20 bg-amber-500/[0.06]')
                                 }
                               >
-                                <div className="flex items-center gap-2">
-                                  <Badge className="bg-white/5 font-mono text-[10px] text-zinc-400">
-                                    {issue.field}
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge className={finding.severity === 'error' ? 'bg-rose-500/15 text-rose-200' : 'bg-amber-500/15 text-amber-200'}>
+                                    {finding.severity}
                                   </Badge>
-                                  <span
-                                    className={
-                                      'text-xs font-medium ' +
-                                      (issue.severity === 'error' ? 'text-rose-200' : 'text-amber-200')
-                                    }
-                                  >
-                                    {issue.message}
-                                  </span>
+                                  <Badge className="bg-white/5 font-mono text-[10px] text-zinc-400">{finding.field}</Badge>
+                                  <strong className={finding.severity === 'error' ? 'text-xs text-rose-100' : 'text-xs text-amber-100'}>
+                                    {finding.message}
+                                  </strong>
                                 </div>
-                                <p className="mt-2 text-xs leading-5 text-zinc-500">{issue.suggestion}</p>
-                              </div>
-                            ))
-                          ) : (
-                            <div className="flex gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.05] p-3 text-xs text-emerald-200">
-                              <CheckCircle2 className="size-4 shrink-0" />
-                              All deterministic checks passed.
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-600">
-                            Docs & grammar review
-                          </p>
-                          {aiReview && (
-                            <Badge className={docsBadge(aiReview.documentationStatus)}>
-                              {aiReview.documentationStatus.replace('_', ' ')}
-                            </Badge>
-                          )}
-                        </div>
-
-                        {aiReview && (
-                          <div className="mt-3 space-y-3">
-                            <p className="rounded-xl border border-white/7 bg-white/[0.02] p-3 text-xs leading-5 text-zinc-400">
-                              {aiReview.documentationSummary}
-                            </p>
-                            {aiReview.grammarIssues.map((issue, index) => (
-                              <div key={'grammar' + index} className="rounded-xl border border-amber-500/20 bg-amber-500/[0.05] p-3 text-xs leading-5 text-amber-100">
-                                <strong>Grammar:</strong> {issue}
-                              </div>
-                            ))}
-                            {aiReview.suggestions.map((suggestion, index) => (
-                              <div key={'suggestion' + index} className="rounded-xl border border-indigo-400/20 bg-indigo-400/[0.05] p-3 text-xs leading-5 text-indigo-100">
-                                <strong>Suggestion:</strong> {suggestion}
+                                <p className="mt-2 text-xs leading-5 text-zinc-400">
+                                  <span className="font-medium text-zinc-300">Recommended change:</span> {finding.suggestion}
+                                </p>
                               </div>
                             ))}
                           </div>
+                        ) : (
+                          <div className="mt-3 flex gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.05] p-4 text-sm text-emerald-300">
+                            <CheckCircle2 className="size-4 shrink-0" />
+                            No changes requested for this rubric.
+                          </div>
                         )}
                       </div>
+
+                      {result.findings.length > 0 && result.aiReview?.correctedRubric && (
+                        <details className="rounded-xl border border-indigo-400/15 bg-indigo-400/[0.035]">
+                          <summary className="cursor-pointer list-none px-4 py-3 text-xs font-medium text-indigo-200">
+                            View corrected JSON preview
+                          </summary>
+                          <pre className="overflow-x-auto border-t border-indigo-400/10 p-4 font-mono text-[11px] leading-5 text-zinc-400">
+                            {JSON.stringify(result.aiReview.correctedRubric, null, 2)}
+                          </pre>
+                        </details>
+                      )}
                     </div>
                   </details>
                 );
