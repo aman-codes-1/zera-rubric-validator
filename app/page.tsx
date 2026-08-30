@@ -456,6 +456,73 @@ function docsBadge(status: AiReview['documentationStatus']) {
   return 'border-amber-500/30 bg-amber-500/10 text-amber-300';
 }
 
+function statusFindings(review: AiReview | undefined, rubric: RubricRecord): Issue[] {
+  if (!review) return [];
+
+  const findings: Issue[] = [];
+  const hasFinding = (field: string, text: string) =>
+    review.findings.some(
+      (finding) => finding.field === field && finding.message.toLowerCase().includes(text),
+    );
+  const hasFieldFinding = (field: string) =>
+    review.findings.some((finding) => finding.field === field);
+
+  if (review.documentationStatus === 'not_found' && !hasFieldFinding('documentation')) {
+    findings.push({
+      field: 'documentation',
+      severity: 'error',
+      message: 'Supporting documentation was not found for this rubric.',
+      suggestion: 'Rewrite the rubric around a documented workflow or provide a more specific, verifiable product area.',
+    });
+  } else if (review.documentationStatus === 'unclear' && !hasFieldFinding('documentation')) {
+    findings.push({
+      field: 'documentation',
+      severity: 'warning',
+      message: 'Documentation support is unclear for this rubric.',
+      suggestion: 'Make the workflow and observable behavior more specific so they can be verified against official documentation.',
+    });
+  }
+
+  if (review.sectionMatch === 'mismatch' && !hasFinding('criterion', 'section')) {
+    findings.push({
+      field: 'criterion',
+      severity: 'error',
+      message: 'The criterion section does not match the documented workflow.',
+      suggestion: 'Change the criterion prefix to the product section that contains this workflow.',
+    });
+  } else if (review.sectionMatch === 'unclear' && !hasFinding('criterion', 'section')) {
+    findings.push({
+      field: 'criterion',
+      severity: 'warning',
+      message: 'The criterion section could not be verified.',
+      suggestion: 'Use the exact documented section or workflow name before the colon.',
+    });
+  }
+
+  const declaredTag = rubric.tags[0]?.toLowerCase();
+  if (review.inferredTag === 'unclear' && !hasFieldFinding('tag')) {
+    findings.push({
+      field: 'tag',
+      severity: 'warning',
+      message: 'The rubric type could not be inferred confidently.',
+      suggestion: 'Clarify whether the behavior is broken functionality or a request for new functionality.',
+    });
+  } else if (
+    review.inferredTag !== 'unclear' &&
+    review.inferredTag !== declaredTag &&
+    !hasFieldFinding('tag')
+  ) {
+    findings.push({
+      field: 'tag',
+      severity: 'error',
+      message: 'The declared tag does not match the behavior described by the rubric.',
+      suggestion: `Change the tag to “${review.inferredTag}” or rewrite the behavior so it matches “${declaredTag || 'the intended type'}”.`,
+    });
+  }
+
+  return findings;
+}
+
 export default function Home() {
   const applicationComboboxAnchor = useComboboxAnchor();
   const [application, setApplication] = useState<Application>(APPLICATIONS[0]);
@@ -472,7 +539,16 @@ export default function Home() {
     () =>
       results.map((result) => {
         const aiReview = aiResponse?.rubricReviews.find((review) => review.index === result.index);
-        const findings = [...result.issues, ...(aiReview?.findings || [])];
+        const aiFindings = (aiReview?.findings || []).map((finding) =>
+          aiReview?.documentationStatus === 'not_found' && finding.field === 'documentation'
+            ? { ...finding, severity: 'error' as const }
+            : finding,
+        );
+        const findings = [
+          ...result.issues,
+          ...aiFindings,
+          ...statusFindings(aiReview, result.rubric),
+        ];
         return {
           ...result,
           aiReview,
@@ -1187,7 +1263,18 @@ export default function Home() {
                       <div className="flex shrink-0 items-center gap-4">
                         <div className="hidden text-right md:block">
                           <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Criterion section</p>
-                          <p className="mt-1 text-xs font-medium text-emerald-300">{criterionSection}</p>
+                          <p
+                            className={
+                              'mt-1 text-xs font-medium ' +
+                              (result.aiReview?.sectionMatch === 'mismatch'
+                                ? 'text-rose-300'
+                                : result.aiReview?.sectionMatch === 'unclear'
+                                  ? 'text-amber-300'
+                                  : 'text-emerald-300')
+                            }
+                          >
+                            {criterionSection}
+                          </p>
                         </div>
                         <ChevronDown
                           aria-hidden="true"
@@ -1202,8 +1289,34 @@ export default function Home() {
                         <p className="mt-2 text-sm leading-6 text-zinc-200">{result.rubric.criterion}</p>
                         <div className="mt-4 flex flex-wrap gap-x-8 gap-y-2 text-xs text-zinc-500">
                           <p>Declared tag: <strong className="text-zinc-300">{result.rubric.tags.join(', ') || 'missing'}</strong></p>
-                          <p>Inferred tag: <strong className="text-indigo-300">{result.aiReview?.inferredTag || 'unclear'}</strong></p>
-                          <p>Section match: <strong className="text-zinc-300">{result.aiReview?.sectionMatch || 'unclear'}</strong></p>
+                          <p>
+                            Inferred tag:{' '}
+                            <strong
+                              className={
+                                result.aiReview?.inferredTag === 'unclear'
+                                  ? 'text-amber-300'
+                                  : result.aiReview?.inferredTag === result.rubric.tags[0]?.toLowerCase()
+                                    ? 'text-emerald-300'
+                                    : 'text-rose-300'
+                              }
+                            >
+                              {result.aiReview?.inferredTag || 'unclear'}
+                            </strong>
+                          </p>
+                          <p>
+                            Section match:{' '}
+                            <strong
+                              className={
+                                result.aiReview?.sectionMatch === 'mismatch'
+                                  ? 'text-rose-300'
+                                  : result.aiReview?.sectionMatch === 'unclear'
+                                    ? 'text-amber-300'
+                                    : 'text-emerald-300'
+                              }
+                            >
+                              {result.aiReview?.sectionMatch || 'unclear'}
+                            </strong>
+                          </p>
                         </div>
                       </div>
 
