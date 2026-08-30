@@ -5,8 +5,8 @@ import next from 'next';
 import { PRODUCT_NAME } from '../lib/constants.mjs';
 import { handleValidationRequest } from '../worker/feather-worker.js';
 
-const devHost = process.env.ZERA_DEV_HOST || 'localhost';
-const devPort = Number(process.env.ZERA_DEV_PORT || 3000);
+const devHost = process.env.DEV_HOST || 'localhost';
+const devPort = Number(process.env.DEV_PORT || 3000);
 const nextApp = next({ dev: true, hostname: devHost, port: devPort });
 const handleNextRequest = nextApp.getRequestHandler();
 
