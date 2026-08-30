@@ -866,7 +866,7 @@ export default function Home() {
                 }}
                 placeholder={'[\n  {\n    "criterion": "Home: observable issue",\n    "score": 10,\n    "tags": ["bug"],\n    "forms": { ... }\n  }\n]'}
                 spellCheck={false}
-                className="min-h-[430px] resize-y rounded-none border-0 bg-transparent p-5 font-mono text-[12px] leading-6 text-zinc-300 shadow-none focus-visible:ring-0"
+                className="h-[430px] min-h-[430px] max-h-[430px] resize-none overflow-y-auto rounded-none border-0 bg-transparent p-5 font-mono text-[12px] leading-6 text-zinc-300 shadow-none focus-visible:ring-0"
               />
             </div>
 
