@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import next from 'next';
 
 import { PRODUCT_NAME } from '../lib/constants.mjs';
-import { validateWithOpenAI } from '../worker/checkset-worker.js';
+import { validateWithOpenAI } from '../worker/feather-worker.js';
 
 const devHost = process.env.ZERA_DEV_HOST || 'localhost';
 const devPort = Number(process.env.ZERA_DEV_PORT || 3000);

@@ -6,7 +6,7 @@ const exportDirectory = path.join(projectDirectory, 'out');
 const distributionDirectory = path.join(projectDirectory, 'dist');
 const serverDirectory = path.join(distributionDirectory, 'server');
 const staticDirectory = path.join(distributionDirectory, 'static');
-const workerEntry = path.join(projectDirectory, 'worker', 'checkset-worker.js');
+const workerEntry = path.join(projectDirectory, 'worker', 'feather-worker.js');
 
 await rm(distributionDirectory, { recursive: true, force: true });
 await mkdir(serverDirectory, { recursive: true });

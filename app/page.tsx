@@ -43,7 +43,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { PRODUCT_NAME } from '@/lib/constants.mjs';
+import { PRODUCT_NAME, PRODUCT_TITLE } from '@/lib/constants.mjs';
 
 type BatchKey = 'Batch A' | 'Batch B' | 'Batch C';
 const APPLICATIONS = ['quickbooks', 'workday'] as const;
@@ -762,7 +762,7 @@ export default function Home() {
               <Braces className="size-[18px]" />
             </span>
             <div>
-              <strong className="block text-sm tracking-tight">{PRODUCT_NAME} Feather</strong>
+              <strong className="block text-sm tracking-tight">{PRODUCT_TITLE}</strong>
               <span className="block text-xs text-zinc-500">Documentation-grounded rubric QA</span>
             </div>
           </div>
@@ -795,7 +795,7 @@ export default function Home() {
 
         <section className="mt-8 max-w-3xl">
           <p className="font-mono text-xs font-semibold uppercase tracking-[0.22em] text-emerald-300">
-            Nexus / CheckSet
+            Feather Rubric QA
           </p>
           <h1 className="mt-3 text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">
             Validate feather rubrics

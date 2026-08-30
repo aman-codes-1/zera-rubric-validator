@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
-import { PRODUCT_NAME } from '@/lib/constants.mjs';
+import { PRODUCT_TITLE } from '@/lib/constants.mjs';
 import './globals.css';
 
 const geistSans = Geist({
@@ -15,17 +15,17 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://zera-review-lab.aman-codes0.chatgpt.site'),
-  title: `${PRODUCT_NAME} CheckSet - Documentation-grounded Rubric QA`,
+  title: PRODUCT_TITLE,
   description:
     'Validate rubric batches, tags, reproduction steps, grammar, and product-documentation alignment.',
   openGraph: {
-    title: `${PRODUCT_NAME} CheckSet`,
+    title: PRODUCT_TITLE,
     description: 'Validate rubric batches against product documentation',
     images: [{ url: '/og.png', width: 1200, height: 630 }],
   },
   twitter: {
     card: 'summary_large_image',
-    title: `${PRODUCT_NAME} CheckSet`,
+    title: PRODUCT_TITLE,
     description: 'Validate rubric batches against product documentation',
     images: ['/og.png'],
   },
