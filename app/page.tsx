@@ -570,7 +570,17 @@ export default function Home() {
           rubrics,
         }),
       });
-      const payload = (await response.json()) as AiResponse & { error?: string };
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('AI documentation review is temporarily unavailable. Please try again.');
+      }
+
+      let payload: AiResponse & { error?: string };
+      try {
+        payload = (await response.json()) as AiResponse & { error?: string };
+      } catch {
+        throw new Error('AI documentation review is temporarily unavailable. Please try again.');
+      }
 
       if (!response.ok) {
         throw new Error(payload.error || 'AI documentation review is unavailable.');

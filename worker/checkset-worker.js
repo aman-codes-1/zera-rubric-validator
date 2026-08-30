@@ -88,7 +88,7 @@ const reviewSchema = {
   },
 };
 
-async function validateWithOpenAI(request, env) {
+export async function validateWithOpenAI(request, env) {
   if (!env.OPENAI_API_KEY) {
     return json(
       {
@@ -216,7 +216,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (url.pathname === '/api/validate') {
+    if (url.pathname === '/api/validate' || url.pathname === '/api/validate/') {
       if (request.method !== 'POST') {
         return json({ error: 'Method not allowed.' }, 405);
       }
