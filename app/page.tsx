@@ -27,6 +27,8 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 
 type BatchKey = 'a' | 'b' | 'c';
+const APPLICATIONS = ['quickbooks', 'workday'] as const;
+type Application = (typeof APPLICATIONS)[number];
 type IssueSeverity = 'error' | 'warning';
 type AiStatus = 'idle' | 'researching' | 'ready' | 'unavailable';
 
@@ -390,9 +392,9 @@ function batchFailureMessage(
   if (check.label === 'Valid single tags') {
     const rubricsCheck = summary.checks.find((item) => item.label === 'Rubrics');
     if (rubricsCheck && !rubricsCheck.pass) {
-      return `Valid single tags: ${check.current}/${check.target}. Complete the required rubric count before checking tag coverage.`;
+      return `Valid single tags: ${check.current}/${check.target}.`;
     }
-    return `Valid single tags: ${check.current}/${check.target}. Every rubric must have exactly one valid tag.`;
+    return `Valid single tags: ${check.current}/${check.target}. Add 1.`;
   }
 
   return `${check.label}: ${check.current}/${check.target} minimum. Add ${Math.max(0, check.target - check.current)}.`;
@@ -434,7 +436,7 @@ function docsBadge(status: AiReview['documentationStatus']) {
 }
 
 export default function Home() {
-  const [application, setApplication] = useState('quickbooks');
+  const [application, setApplication] = useState<Application>(APPLICATIONS[0]);
   const [batchKey, setBatchKey] = useState<BatchKey>('a');
   const [jsonInput, setJsonInput] = useState('');
   const [results, setResults] = useState<RubricResult[]>([]);
@@ -635,7 +637,7 @@ export default function Home() {
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-400">
             Check batch requirements, JSON structure, tags, section prefixes, reproduction steps,
-            grammar, specificity, and alignment with current QuickBooks documentation.
+            grammar, specificity, and alignment with current documentation for the selected application.
           </p>
         </section>
 
@@ -663,14 +665,24 @@ export default function Home() {
                   <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-zinc-500" />
                   <select
                     value={application}
-                    onChange={(event) => setApplication(event.target.value)}
+                    onChange={(event) => {
+                      setApplication(event.target.value as Application);
+                      setResults([]);
+                      setAiResponse(null);
+                      setAiStatus('idle');
+                      setAiError('');
+                    }}
                     className="h-11 w-full appearance-none rounded-xl border border-white/10 bg-[#101317] pr-9 pl-10 text-sm outline-none transition focus:border-emerald-400/50 focus:ring-3 focus:ring-emerald-400/10"
                   >
-                    <option value="quickbooks">quickbooks</option>
+                    {APPLICATIONS.map((item) => (
+                      <option key={item} value={item}>{item}</option>
+                    ))}
                   </select>
                   <span className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-zinc-500">⌄</span>
                 </div>
-                <span className="mt-2 block text-xs text-zinc-600">1 supported application</span>
+                <span className="mt-2 block text-xs text-zinc-600">
+                  {APPLICATIONS.length} supported applications
+                </span>
               </label>
 
               <label className="block">
