@@ -710,7 +710,7 @@ export default function Home() {
                   >
                     <ComboboxEmpty className="py-3 text-zinc-500">No application found.</ComboboxEmpty>
                     <ComboboxList>
-                      {APPLICATIONS.map((item) => (
+                      {(item: Application) => (
                         <ComboboxItem
                           key={item}
                           value={item}
@@ -718,7 +718,7 @@ export default function Home() {
                         >
                           {item}
                         </ComboboxItem>
-                      ))}
+                      )}
                     </ComboboxList>
                   </ComboboxContent>
                 </Combobox>
