@@ -32,6 +32,7 @@ import {
   ComboboxInput,
   ComboboxItem,
   ComboboxList,
+  useComboboxAnchor,
 } from '@/components/ui/combobox';
 import { InputGroupAddon } from '@/components/ui/input-group';
 import {
@@ -453,6 +454,7 @@ function docsBadge(status: AiReview['documentationStatus']) {
 }
 
 export default function Home() {
+  const applicationComboboxAnchor = useComboboxAnchor();
   const [application, setApplication] = useState<Application>(APPLICATIONS[0]);
   const [batchKey, setBatchKey] = useState<BatchKey>('Batch A');
   const [jsonInput, setJsonInput] = useState('');
@@ -691,16 +693,21 @@ export default function Home() {
                     }
                   }}
                 >
-                  <ComboboxInput
-                    aria-label="Search supported applications"
-                    placeholder="Search supported apps..."
-                    className="h-11 w-full rounded-xl border-white/10 bg-[#101317] shadow-none transition focus-within:border-indigo-400/70 focus-within:ring-3 focus-within:ring-indigo-400/15 [&_input]:h-full [&_input]:font-mono [&_input]:text-zinc-100 [&_input]:placeholder:text-zinc-600"
+                  <div ref={applicationComboboxAnchor} className="w-full">
+                    <ComboboxInput
+                      aria-label="Search supported applications"
+                      placeholder="Search supported apps..."
+                      className="h-11 w-full rounded-xl border-white/10 bg-[#101317] shadow-none transition has-[[data-slot=input-group-control]:focus-visible]:border-indigo-400/70 has-[[data-slot=input-group-control]:focus-visible]:ring-1 has-[[data-slot=input-group-control]:focus-visible]:ring-indigo-400/30 [&_input]:h-full [&_input]:font-mono [&_input]:text-zinc-100 [&_input]:placeholder:text-zinc-600"
+                    >
+                      <InputGroupAddon align="inline-start" className="pl-3 pr-0 text-zinc-500">
+                        <Search aria-hidden="true" className="size-4" />
+                      </InputGroupAddon>
+                    </ComboboxInput>
+                  </div>
+                  <ComboboxContent
+                    anchor={applicationComboboxAnchor}
+                    className="border border-white/10 bg-[#101317] p-1 text-zinc-100 shadow-2xl ring-0"
                   >
-                    <InputGroupAddon align="inline-start" className="pl-3 pr-0 text-zinc-500">
-                      <Search aria-hidden="true" className="size-4" />
-                    </InputGroupAddon>
-                  </ComboboxInput>
-                  <ComboboxContent className="border border-white/10 bg-[#101317] p-1 text-zinc-100 shadow-2xl ring-0">
                     <ComboboxEmpty className="py-3 text-zinc-500">No application found.</ComboboxEmpty>
                     <ComboboxList>
                       {APPLICATIONS.map((item) => (
