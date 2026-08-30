@@ -88,9 +88,9 @@ const BATCHES: Record<
   BatchKey,
   { label: string; total: number; bugs: number; features: number; rest: number }
 > = {
-  a: { label: 'Batch A · 20 rubrics', total: 20, bugs: 5, features: 10, rest: 5 },
-  b: { label: 'Batch B · 20 rubrics', total: 20, bugs: 3, features: 3, rest: 14 },
-  c: { label: 'Batch C · 10 rubrics', total: 10, bugs: 3, features: 3, rest: 4 },
+  a: { label: 'Batch A · 20 rubrics (5+10)', total: 20, bugs: 5, features: 10, rest: 5 },
+  b: { label: 'Batch B · 20 rubrics (3+3)', total: 20, bugs: 3, features: 3, rest: 14 },
+  c: { label: 'Batch C · 10 rubrics (3+3)', total: 10, bugs: 3, features: 3, rest: 4 },
 };
 
 const VALID_TAGS = new Set(['bug', 'feature request']);
