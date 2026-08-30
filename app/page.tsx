@@ -395,9 +395,8 @@ function parseInput(value: string) {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : 'The JSON syntax is invalid.';
-    throw new JsonFormatError([`Invalid JSON syntax: ${detail}`]);
+  } catch {
+    throw new JsonFormatError(['The JSON is invalid. Check the format and try again.']);
   }
 
   if (!Array.isArray(parsed)) {
