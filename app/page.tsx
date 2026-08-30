@@ -864,7 +864,7 @@ export default function Home() {
               <Button
                 variant="outline"
                 onClick={reset}
-                disabled={isRunning}
+                disabled={isRunning || !hasInput}
                 className="h-11 border-white/10 bg-transparent px-5 text-zinc-300 hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <RefreshCcw /> Clear Fields
