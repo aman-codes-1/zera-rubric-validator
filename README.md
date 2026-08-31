@@ -210,7 +210,7 @@ Keep `OPENAI_API_KEY` private. It is used only by the server-side validation wor
 npm run dev
 ```
 
-Open [https://zera-rubric-validator.vercel.app](http://localhost:3000).
+Open [Zera for Feather](https://zera-rubric-validator.vercel.app).
 
 ## Available scripts
 
