@@ -49,6 +49,7 @@ type BatchKey = 'Batch A' | 'Batch B' | 'Batch C';
 const APPLICATIONS = ['quickbooks', 'workday'] as const;
 type Application = (typeof APPLICATIONS)[number];
 type IssueSeverity = 'error' | 'warning';
+type IssueKind = 'grammar' | 'documentation';
 type AiStatus = 'idle' | 'researching' | 'ready' | 'unavailable';
 
 type RubricRecord = {
@@ -64,10 +65,14 @@ type RubricRecord = {
 };
 
 type Issue = {
+  kind?: IssueKind;
   field: string;
   severity: IssueSeverity;
   message: string;
   suggestion: string;
+  lineNumber?: number | null;
+  excerpt?: string;
+  correctedText?: string;
 };
 
 type RubricResult = {
@@ -92,10 +97,8 @@ type BatchSummary = {
 
 type AiReview = {
   index: number;
-  inferredTag: 'bug' | 'feature request' | 'unclear';
   criterionSection: string;
-  sectionMatch: 'match' | 'mismatch' | 'unclear';
-  documentationStatus: 'supported' | 'unclear' | 'not_found';
+  documentationStatus: 'supported' | 'unclear' | 'not_found' | 'not_applicable';
   documentationSummary: string;
   findings: Issue[];
   correctedRubric: RubricRecord;
@@ -123,6 +126,11 @@ const BATCHES: Record<
 };
 
 const VALID_TAGS = new Set(['bug', 'feature request']);
+const DOCUMENTATION_AI_FIELDS = new Set([
+  'criterion',
+  'expected_behavior',
+  'actual_behavior',
+]);
 const VALIDATION_POLL_INTERVAL_MS = 2000;
 const RUBRIC_KEYS = ['criterion', 'score', 'tags', 'forms'] as const;
 const FORM_KEYS = [
@@ -407,6 +415,53 @@ function buildBatchSummary(rubrics: RubricRecord[], key: BatchKey): BatchSummary
   };
 }
 
+function inferBatchKeyFromJson(value: string): BatchKey | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return null;
+  }
+
+  if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every(isObject)) {
+    return null;
+  }
+
+  const rubrics = parsed.map(normalizeRubric);
+  const candidates = (Object.keys(BATCHES) as BatchKey[]).filter(
+    (key) => BATCHES[key].total === rubrics.length,
+  );
+
+  if (candidates.length === 0) return null;
+
+  const bugs = rubrics.filter(
+    (rubric) => rubric.tags.length === 1 && rubric.tags[0].toLowerCase() === 'bug',
+  ).length;
+  const features = rubrics.filter(
+    (rubric) =>
+      rubric.tags.length === 1 && rubric.tags[0].toLowerCase() === 'feature request',
+  ).length;
+
+  const rankedCandidates = candidates.sort((leftKey, rightKey) => {
+    const left = BATCHES[leftKey];
+    const right = BATCHES[rightKey];
+    const leftPasses = bugs >= left.bugs && features >= left.features;
+    const rightPasses = bugs >= right.bugs && features >= right.features;
+
+    if (leftPasses !== rightPasses) return leftPasses ? -1 : 1;
+
+    const leftDeficit = Math.max(0, left.bugs - bugs) + Math.max(0, left.features - features);
+    const rightDeficit =
+      Math.max(0, right.bugs - bugs) + Math.max(0, right.features - features);
+
+    if (leftDeficit !== rightDeficit) return leftDeficit - rightDeficit;
+
+    return right.bugs + right.features - (left.bugs + left.features);
+  });
+
+  return rankedCandidates[0];
+}
+
 function batchFailureMessage(
   check: BatchSummary['checks'][number],
   summary: BatchSummary,
@@ -461,7 +516,259 @@ function parseInput(value: string) {
 function docsBadge(status: AiReview['documentationStatus']) {
   if (status === 'supported') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
   if (status === 'not_found') return 'border-rose-500/30 bg-rose-500/10 text-rose-300';
+  if (status === 'not_applicable') return 'border-white/10 bg-white/[0.04] text-zinc-400';
   return 'border-amber-500/30 bg-amber-500/10 text-amber-300';
+}
+
+function rubricFieldValue(rubric: RubricRecord | undefined, field: string) {
+  if (!rubric) return '';
+  if (field === 'criterion') return rubric.criterion;
+  if (field === 'tag') return rubric.tags.join(', ');
+  if (field === 'page_or_workflow') return rubric.forms.page_or_workflow;
+  if (field === 'reproduction_steps') return rubric.forms.reproduction_steps;
+  if (field === 'expected_behavior') return rubric.forms.expected_behavior;
+  if (field === 'actual_behavior') return rubric.forms.actual_behavior;
+  return '';
+}
+
+function correctedTextForFinding(
+  finding: Issue,
+  originalRubric: RubricRecord,
+  correctedRubric: RubricRecord | undefined,
+) {
+  const originalText = rubricFieldValue(originalRubric, finding.field).trim();
+  const findingCorrection = finding.correctedText?.trim() || '';
+  if (findingCorrection && findingCorrection !== originalText) {
+    return findingCorrection;
+  }
+
+  const rubricCorrection = rubricFieldValue(correctedRubric, finding.field).trim();
+  return rubricCorrection && rubricCorrection !== originalText
+    ? rubricCorrection
+    : '';
+}
+
+function applyFindingCorrections(
+  originalRubric: RubricRecord,
+  correctedRubric: RubricRecord | undefined,
+  findings: Issue[],
+) {
+  const nextRubric: RubricRecord = {
+    ...originalRubric,
+    tags: [...originalRubric.tags],
+    forms: { ...originalRubric.forms },
+  };
+
+  findings.forEach((finding) => {
+    const correctedText = correctedTextForFinding(
+      finding,
+      originalRubric,
+      correctedRubric,
+    );
+    if (!correctedText) return;
+
+    if (finding.field === 'criterion') nextRubric.criterion = correctedText;
+    if (finding.field === 'tag') nextRubric.tags = [correctedText];
+    if (finding.field === 'page_or_workflow') nextRubric.forms.page_or_workflow = correctedText;
+    if (finding.field === 'reproduction_steps') nextRubric.forms.reproduction_steps = correctedText;
+    if (finding.field === 'expected_behavior') nextRubric.forms.expected_behavior = correctedText;
+    if (finding.field === 'actual_behavior') nextRubric.forms.actual_behavior = correctedText;
+  });
+
+  return nextRubric;
+}
+
+function rubricHasChanges(original: RubricRecord, corrected: RubricRecord | undefined) {
+  return Boolean(corrected) && JSON.stringify(original) !== JSON.stringify(corrected);
+}
+
+function reviewNeedsCorrectionRepair(review: AiReview, rubric: RubricRecord) {
+  return review.findings
+    .filter((finding) => isAllowedAiFinding(finding, rubric))
+    .some(
+      (finding) =>
+        !correctedTextForFinding(finding, rubric, review.correctedRubric),
+    );
+}
+
+function changedTextRange(original: string, corrected: string): [number, number] | null {
+  if (!original || original === corrected) return null;
+
+  let start = 0;
+  while (start < original.length && start < corrected.length && original[start] === corrected[start]) {
+    start += 1;
+  }
+
+  let originalEnd = original.length;
+  let correctedEnd = corrected.length;
+  while (
+    originalEnd > start &&
+    correctedEnd > start &&
+    original[originalEnd - 1] === corrected[correctedEnd - 1]
+  ) {
+    originalEnd -= 1;
+    correctedEnd -= 1;
+  }
+
+  if (originalEnd === start) {
+    const followingWord = original.slice(start).match(/^\s*\S+/)?.[0];
+    if (followingWord) return [start, start + followingWord.length];
+
+    const previousWord = original.slice(0, start).match(/\S+\s*$/)?.[0];
+    if (previousWord) return [start - previousWord.length, start];
+  }
+
+  return [start, originalEnd];
+}
+
+function locateFinding(
+  finding: Issue,
+  rubric: RubricRecord,
+  correctedRubric: RubricRecord | undefined,
+): Issue {
+  const originalValue = rubricFieldValue(rubric, finding.field);
+  if (!originalValue) return finding;
+
+  const correctedValue = rubricFieldValue(correctedRubric, finding.field);
+  const originalLines = originalValue.split('\n');
+  const correctedLines = correctedValue.split('\n');
+  let lineNumber = finding.lineNumber;
+
+  if (typeof lineNumber !== 'number' || lineNumber < 1 || lineNumber > originalLines.length) {
+    const excerpt = finding.excerpt?.trim().toLowerCase();
+    const excerptLine = excerpt
+      ? originalLines.findIndex((line) => line.toLowerCase().includes(excerpt))
+      : -1;
+    const changedLine = originalLines.findIndex(
+      (line, index) => line !== (correctedLines[index] ?? line),
+    );
+
+    lineNumber = excerptLine >= 0
+      ? excerptLine + 1
+      : changedLine >= 0
+        ? changedLine + 1
+        : originalLines.length === 1
+          ? 1
+          : null;
+  }
+
+  let excerpt = finding.excerpt?.trim() || '';
+  if (!excerpt && typeof lineNumber === 'number') {
+    const originalLine = originalLines[lineNumber - 1] || '';
+    const correctedLine = correctedLines[lineNumber - 1] ?? originalLine;
+    const range = changedTextRange(originalLine, correctedLine);
+    excerpt = range ? originalLine.slice(range[0], range[1]).trim() : originalLine.trim();
+  }
+
+  const correctedText = finding.correctedText?.trim() ||
+    (correctedValue && correctedValue !== originalValue ? correctedValue : '');
+
+  return { ...finding, lineNumber, excerpt, correctedText };
+}
+
+function HighlightedFieldValue({
+  value,
+  correctedValue,
+  field,
+  findings,
+  className,
+}: {
+  value: string;
+  correctedValue?: string;
+  field: string;
+  findings: Issue[];
+  className: string;
+}) {
+  const lines = value.split('\n');
+  const correctedLines = correctedValue?.split('\n') || [];
+  const fieldFindings = findings.filter((finding) => finding.field === field);
+
+  return (
+    <div className={className}>
+      {lines.map((line, lineIndex) => {
+        const lineNumber = lineIndex + 1;
+        const lineFindings = fieldFindings.filter((finding) => {
+          if (typeof finding.lineNumber === 'number') {
+            return finding.lineNumber === lineNumber;
+          }
+
+          const excerpt = finding.excerpt?.trim().toLowerCase();
+          if (excerpt) {
+            return line.toLowerCase().includes(excerpt);
+          }
+
+          return lines.length === 1 || fieldFindings.length > 0;
+        });
+        const exactExcerpt = lineFindings
+          .map((finding) => finding.excerpt?.trim())
+          .find((excerpt) => excerpt && line.toLowerCase().includes(excerpt.toLowerCase()));
+        const excerptStart = exactExcerpt
+          ? line.toLowerCase().indexOf(exactExcerpt.toLowerCase())
+          : -1;
+        const excerptRange: [number, number] | null = excerptStart >= 0 && exactExcerpt
+          ? [excerptStart, excerptStart + exactExcerpt.length]
+          : null;
+        const correctedLine = correctedLines[lineIndex] ?? line;
+        const diffRange = changedTextRange(line, correctedLine);
+        const severityFindings = lineFindings.length > 0
+          ? lineFindings
+          : diffRange
+            ? fieldFindings
+            : [];
+        const hasError = severityFindings.some((finding) => finding.severity === 'error');
+        const hasWarning = severityFindings.some((finding) => finding.severity === 'warning');
+        const highlightRange = severityFindings.length === 0
+          ? null
+          : excerptRange && exactExcerpt !== line.trim()
+            ? excerptRange
+            : diffRange || excerptRange;
+        const highlightClass = hasError
+          ? 'rounded bg-rose-500/25 px-0.5 text-rose-100 ring-1 ring-inset ring-rose-400/35'
+          : 'rounded bg-amber-500/25 px-0.5 text-amber-100 ring-1 ring-inset ring-amber-400/35';
+
+        return (
+          <span
+            key={`${field}-${lineNumber}`}
+            className={
+              'block rounded-md px-2 py-1 [overflow-wrap:anywhere] ' +
+              (!highlightRange && hasError
+                ? 'bg-rose-500/15 text-rose-100 ring-1 ring-inset ring-rose-500/25'
+                : !highlightRange && hasWarning
+                  ? 'bg-amber-500/15 text-amber-100 ring-1 ring-inset ring-amber-500/25'
+                  : '')
+            }
+          >
+            {lines.length > 1 && (
+              <span className="mr-2 select-none font-mono text-[10px] text-zinc-600">
+                {lineNumber}
+              </span>
+            )}
+            {highlightRange ? (
+              <>
+                {line.slice(0, highlightRange[0])}
+                <mark className={highlightClass}>
+                  {line.slice(highlightRange[0], highlightRange[1]) || ' '}
+                </mark>
+                {line.slice(highlightRange[1])}
+              </>
+            ) : line || ' '}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function isFeatureRequest(rubric: RubricRecord) {
+  return rubric.tags.length === 1 && rubric.tags[0].toLowerCase() === 'feature request';
+}
+
+function isAllowedAiFinding(finding: Issue, rubric: RubricRecord) {
+  if (finding.kind === 'grammar') return finding.field !== 'documentation';
+  if (finding.kind === 'documentation') {
+    return isFeatureRequest(rubric) && DOCUMENTATION_AI_FIELDS.has(finding.field);
+  }
+  return false;
 }
 
 async function readValidationPayload(response: Response): Promise<ValidationApiPayload> {
@@ -483,77 +790,30 @@ function waitForNextValidationPoll() {
   });
 }
 
-function statusFindings(review: AiReview | undefined, rubric: RubricRecord): Issue[] {
-  if (!review) return [];
+async function waitForCompletedValidation(initialResponse: Response) {
+  let response = initialResponse;
+  let payload = await readValidationPayload(response);
 
-  const findings: Issue[] = [];
-  const hasFinding = (field: string, text: string) =>
-    review.findings.some(
-      (finding) => finding.field === field && finding.message.toLowerCase().includes(text),
+  while (response.status === 202) {
+    if (!payload.responseId) {
+      throw new Error('The AI review did not return a response ID. Validation was not completed.');
+    }
+
+    await waitForNextValidationPoll();
+    response = await fetch(
+      `/api/validate?responseId=${encodeURIComponent(payload.responseId)}`,
+      { cache: 'no-store' },
     );
-  const hasFieldFinding = (field: string) =>
-    review.findings.some((finding) => finding.field === field);
-
-  if (review.documentationStatus === 'not_found' && !hasFieldFinding('documentation')) {
-    findings.push({
-      field: 'documentation',
-      severity: 'error',
-      message: 'Supporting documentation was not found for this rubric.',
-      suggestion: 'Rewrite the rubric around a documented workflow or provide a more specific, verifiable product area.',
-    });
-  } else if (review.documentationStatus === 'unclear' && !hasFieldFinding('documentation')) {
-    findings.push({
-      field: 'documentation',
-      severity: 'warning',
-      message: 'Documentation support is unclear for this rubric.',
-      suggestion: 'Make the workflow and observable behavior more specific so they can be verified against official documentation.',
-    });
+    payload = await readValidationPayload(response);
   }
 
-  if (review.sectionMatch === 'mismatch' && !hasFinding('criterion', 'section')) {
-    findings.push({
-      field: 'criterion',
-      severity: 'error',
-      message: 'The criterion section does not match the documented workflow.',
-      suggestion: 'Change the criterion prefix to the product section that contains this workflow.',
-    });
-  } else if (review.sectionMatch === 'unclear' && !hasFinding('criterion', 'section')) {
-    findings.push({
-      field: 'criterion',
-      severity: 'warning',
-      message: 'The criterion section could not be verified.',
-      suggestion: 'Use the exact documented section or workflow name before the colon.',
-    });
-  }
-
-  const declaredTag = rubric.tags[0]?.toLowerCase();
-  if (review.inferredTag === 'unclear' && !hasFieldFinding('tag')) {
-    findings.push({
-      field: 'tag',
-      severity: 'warning',
-      message: 'The rubric type could not be inferred confidently.',
-      suggestion: 'Clarify whether the behavior is broken functionality or a request for new functionality.',
-    });
-  } else if (
-    review.inferredTag !== 'unclear' &&
-    review.inferredTag !== declaredTag &&
-    !hasFieldFinding('tag')
-  ) {
-    findings.push({
-      field: 'tag',
-      severity: 'error',
-      message: 'The declared tag does not match the behavior described by the rubric.',
-      suggestion: `Change the tag to “${review.inferredTag}” or rewrite the behavior so it matches “${declaredTag || 'the intended type'}”.`,
-    });
-  }
-
-  return findings;
+  return { response, payload };
 }
 
 export default function Home() {
   const applicationComboboxAnchor = useComboboxAnchor();
-  const [application, setApplication] = useState<Application>(APPLICATIONS[0]);
-  const [batchKey, setBatchKey] = useState<BatchKey>('Batch A');
+  const [application, setApplication] = useState<Application | null>(null);
+  const [batchKey, setBatchKey] = useState<BatchKey | null>(null);
   const [jsonInput, setJsonInput] = useState('');
   const [results, setResults] = useState<RubricResult[]>([]);
   const [aiStatus, setAiStatus] = useState<AiStatus>('idle');
@@ -561,27 +821,58 @@ export default function Home() {
   const [aiError, setAiError] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedRubricIndex, setCopiedRubricIndex] = useState<number | null>(null);
 
   const reviewedResults = useMemo(
     () =>
       results.map((result) => {
-        const aiReview = aiResponse?.rubricReviews.find((review) => review.index === result.index);
-        const aiFindings = (aiReview?.findings || []).map((finding) =>
-          aiReview?.documentationStatus === 'not_found' && finding.field === 'documentation'
-            ? { ...finding, severity: 'error' as const }
-            : finding,
+        const responseReview = aiResponse?.rubricReviews.find((review) => review.index === result.index);
+        const normalizedReview = responseReview && !isFeatureRequest(result.rubric)
+          ? {
+              ...responseReview,
+              documentationStatus: 'not_applicable' as const,
+              documentationSummary: 'Documentation review is not applicable to bug rubrics. Grammar review only.',
+            }
+          : responseReview;
+        const aiFindings = (normalizedReview?.findings || [])
+          .filter((finding) => isAllowedAiFinding(finding, result.rubric))
+          .map((finding) =>
+            normalizedReview?.documentationStatus === 'not_found' && finding.kind === 'documentation'
+              ? { ...finding, severity: 'error' as const }
+              : finding,
+          );
+        const correctedRubric = applyFindingCorrections(
+          result.rubric,
+          normalizedReview?.correctedRubric,
+          aiFindings,
         );
-        const findings = [
-          ...result.issues,
-          ...aiFindings,
-          ...statusFindings(aiReview, result.rubric),
-        ];
+        const aiReview = normalizedReview
+          ? { ...normalizedReview, correctedRubric }
+          : undefined;
+        const findings = [...result.issues, ...aiFindings].map((finding) =>
+          locateFinding(finding, result.rubric, correctedRubric),
+        );
+        const hasDocumentationFinding = aiFindings.some(
+          (finding) => finding.kind === 'documentation',
+        );
+        const statusErrorCount = isFeatureRequest(result.rubric) &&
+          aiReview?.documentationStatus === 'not_found' &&
+          !hasDocumentationFinding
+          ? 1
+          : 0;
+        const statusWarningCount = isFeatureRequest(result.rubric) &&
+          aiReview?.documentationStatus === 'unclear' &&
+          !hasDocumentationFinding
+          ? 1
+          : 0;
         return {
           ...result,
           aiReview,
           findings,
-          errorCount: findings.filter((finding) => finding.severity === 'error').length,
-          warningCount: findings.filter((finding) => finding.severity === 'warning').length,
+          errorCount:
+            findings.filter((finding) => finding.severity === 'error').length + statusErrorCount,
+          warningCount:
+            findings.filter((finding) => finding.severity === 'warning').length + statusWarningCount,
         };
       }),
     [aiResponse, results],
@@ -590,7 +881,9 @@ export default function Home() {
     () => {
       const errors = reviewedResults.reduce((total, result) => total + result.errorCount, 0);
       const warnings = reviewedResults.reduce((total, result) => total + result.warningCount, 0);
-      const needFix = reviewedResults.filter((result) => result.findings.length > 0).length;
+      const needFix = reviewedResults.filter(
+        (result) => result.errorCount > 0 || result.warningCount > 0,
+      ).length;
 
       return {
         errors,
@@ -613,7 +906,7 @@ export default function Home() {
         }
       : validationMetrics.outcome === 'warning'
         ? {
-            label: 'Pass with warnings',
+            label: 'Passed with warnings',
             submission: 'Review before submit',
             description: `This batch passes the required rules, but has ${validationMetrics.warnings} warning${validationMetrics.warnings === 1 ? '' : 's'} to review before submission.`,
             badgeClass: 'border-amber-500/25 bg-amber-500/12 text-amber-300',
@@ -626,8 +919,9 @@ export default function Home() {
             badgeClass: 'border-emerald-500/25 bg-emerald-500/12 text-emerald-300',
             submissionClass: 'border-emerald-500/20 bg-emerald-500/8 text-emerald-200',
           };
-  const selectedBatch = BATCHES[batchKey];
+  const selectedBatch = batchKey ? BATCHES[batchKey] : null;
   const hasInput = Boolean(jsonInput.trim());
+  const hasFormValue = Boolean(application || batchKey || hasInput);
   const liveInput = useMemo(() => {
     if (!jsonInput.trim()) {
       return { rubrics: [] as RubricRecord[], formatErrors: [] as string[] };
@@ -656,30 +950,44 @@ export default function Home() {
     }
   }, [jsonInput]);
   const liveBatchSummary = useMemo(
-    () => buildBatchSummary(liveInput.rubrics, batchKey),
+    () => (batchKey ? buildBatchSummary(liveInput.rubrics, batchKey) : null),
     [batchKey, liveInput.rubrics],
   );
-  const failedBatchChecks = liveBatchSummary.checks.filter((check) => !check.pass);
-  const batchRequirementsMet = failedBatchChecks.length === 0;
+  const failedBatchChecks =
+    liveBatchSummary?.checks.filter((check) => !check.pass) ?? [];
+  const batchRequirementsMet = Boolean(
+    batchKey && liveBatchSummary?.checks.every((check) => check.pass),
+  );
   const canValidate = Boolean(
     application &&
+      batchKey &&
       hasInput &&
       liveInput.formatErrors.length === 0 &&
       batchRequirementsMet &&
       !isRunning,
   );
 
-  async function loadProvidedExample() {
-    const response = await fetch('/sample-rubrics.json');
-    const text = await response.text();
-    setJsonInput(text);
+  function updateJsonInput(value: string) {
+    setJsonInput(value);
     setResults([]);
     setAiResponse(null);
     setAiStatus('idle');
     setAiError('');
   }
 
+  async function loadProvidedExample() {
+    const response = await fetch('/sample-rubrics.json');
+    const text = await response.text();
+    updateJsonInput(text);
+    setApplication('quickbooks');
+
+    const inferredBatchKey = inferBatchKeyFromJson(text);
+    if (inferredBatchKey) setBatchKey(inferredBatchKey);
+  }
+
   function reset() {
+    setApplication(null);
+    setBatchKey(null);
     setJsonInput('');
     setResults([]);
     setAiResponse(null);
@@ -690,6 +998,8 @@ export default function Home() {
   async function runValidation() {
     setAiError('');
     setAiResponse(null);
+
+    if (!application || !batchKey) return;
 
     let rubrics: RubricRecord[];
     try {
@@ -715,7 +1025,7 @@ export default function Home() {
     });
 
     try {
-      let response = await fetch('/api/validate', {
+      const initialResponse = await fetch('/api/validate', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -724,20 +1034,9 @@ export default function Home() {
           rubrics,
         }),
       });
-      let payload = await readValidationPayload(response);
-
-      while (response.status === 202) {
-        if (!payload.responseId) {
-          throw new Error('The AI review did not return a response ID. Validation was not completed.');
-        }
-
-        await waitForNextValidationPoll();
-        response = await fetch(
-          `/api/validate?responseId=${encodeURIComponent(payload.responseId)}`,
-          { cache: 'no-store' },
-        );
-        payload = await readValidationPayload(response);
-      }
+      const completedValidation = await waitForCompletedValidation(initialResponse);
+      const response = completedValidation.response;
+      let payload = completedValidation.payload;
 
       if (!response.ok) {
         throw new Error(payload.error || 'AI documentation review is unavailable.');
@@ -749,6 +1048,41 @@ export default function Home() {
         rubrics.some((_, index) => !rubricReviews.some((review) => review.index === index))
       ) {
         throw new Error('The AI review returned incomplete results. Validation was not completed.');
+      }
+
+      const needsCorrectionRepair = rubrics.some((rubric, index) => {
+        const review = rubricReviews.find((candidate) => candidate.index === index);
+        return review ? reviewNeedsCorrectionRepair(review, rubric) : false;
+      });
+
+      if (needsCorrectionRepair) {
+        const originalSources = payload.sources || [];
+        const repairInitialResponse = await fetch('/api/validate', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            action: 'repair_corrections',
+            application,
+            batch: batchKey,
+            rubrics,
+            review: payload,
+          }),
+        });
+        const repairResult = await waitForCompletedValidation(repairInitialResponse);
+        const repairedReviews = repairResult.payload.rubricReviews;
+        const repairIsComplete =
+          repairResult.response.ok &&
+          Array.isArray(repairedReviews) &&
+          rubrics.every((_, index) =>
+            repairedReviews.some((review) => review.index === index),
+          );
+
+        if (repairIsComplete) {
+          payload = {
+            ...repairResult.payload,
+            sources: originalSources,
+          };
+        }
       }
 
       const validatedResults = rubrics.map((rubric, index) => ({
@@ -775,12 +1109,24 @@ export default function Home() {
   }
 
   async function copyCorrectedJson() {
-    const correctedRubrics = reviewedResults.map(
-      (result) => result.aiReview?.correctedRubric || result.rubric,
+    const correctedRubrics = reviewedResults.map((result) =>
+      applyFindingCorrections(
+        result.rubric,
+        result.aiReview?.correctedRubric,
+        result.findings,
+      ),
     );
     await navigator.clipboard.writeText(JSON.stringify(correctedRubrics, null, 2));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
+  }
+
+  async function copyCorrectedRubric(index: number, rubric: RubricRecord) {
+    await navigator.clipboard.writeText(JSON.stringify(rubric, null, 2));
+    setCopiedRubricIndex(index);
+    window.setTimeout(() => {
+      setCopiedRubricIndex((currentIndex) => currentIndex === index ? null : currentIndex);
+    }, 1800);
   }
 
   return (
@@ -831,8 +1177,8 @@ export default function Home() {
             Validate feather rubrics
           </h1>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-400">
-            Check batch requirements, JSON structure, tags, section prefixes, reproduction steps,
-            grammar, specificity, and alignment with current documentation for the selected application.
+            Check batch requirements, JSON structure, tags, section prefixes, and reproduction steps.
+            Grammar-review every field, then validate only feature-request capabilities against current documentation.
           </p>
         </section>
 
@@ -846,8 +1192,8 @@ export default function Home() {
                     Documentation context is prepared before every AI review.
                   </p>
                   <p className="mt-1 text-xs leading-5 text-zinc-400">
-                    {PRODUCT_NAME} retrieves current product documentation at review time. It does not retrain
-                    the model or store a new model.
+                    Feature requests are checked for documented capabilities, while bugs receive grammar review only.
+                    Section names, UI placement, and locations are never validated against documentation.
                   </p>
                 </div>
               </div>
@@ -855,23 +1201,29 @@ export default function Home() {
 
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block">
-                <span className="mb-2 block text-xs font-medium text-zinc-300">Application</span>
+                <span className="mb-2 block text-xs font-medium text-zinc-300">
+                  Application <span className="text-rose-400">*</span>
+                </span>
                 <Combobox
                   items={APPLICATIONS}
                   value={application}
                   onValueChange={(value) => {
-                    if (value) {
-                      setApplication(value as Application);
-                      setResults([]);
-                      setAiResponse(null);
-                      setAiStatus('idle');
-                      setAiError('');
-                    }
+                    const nextApplication =
+                      value && APPLICATIONS.includes(value as Application)
+                        ? (value as Application)
+                        : null;
+                    setApplication(nextApplication);
+                    setResults([]);
+                    setAiResponse(null);
+                    setAiStatus('idle');
+                    setAiError('');
                   }}
                 >
                   <div ref={applicationComboboxAnchor} className="w-full">
                     <ComboboxInput
                       aria-label="Search supported applications"
+                      aria-required="true"
+                      required
                       placeholder="Search supported apps..."
                       className="h-11 w-full rounded-xl border-white/10 bg-[#101317] shadow-none transition has-[[data-slot=input-group-control]:focus-visible]:border-indigo-400/70 has-[[data-slot=input-group-control]:focus-visible]:ring-1 has-[[data-slot=input-group-control]:focus-visible]:ring-indigo-400/30 [&_input]:h-full [&_input]:font-mono [&_input]:text-zinc-100 [&_input]:placeholder:text-zinc-600"
                     >
@@ -904,21 +1256,24 @@ export default function Home() {
               </label>
 
               <label className="block">
-                <span className="mb-2 block text-xs font-medium text-zinc-300">Batch requirements</span>
+                <span className="mb-2 block text-xs font-medium text-zinc-300">
+                  Batch requirements <span className="text-rose-400">*</span>
+                </span>
                 <Select
                   value={batchKey}
                   onValueChange={(value) => {
-                    if (value) {
-                      setBatchKey(value as BatchKey);
-                      setResults([]);
-                      setAiResponse(null);
-                      setAiStatus('idle');
-                      setAiError('');
-                    }
+                    const nextBatchKey =
+                      value && value in BATCHES ? (value as BatchKey) : null;
+                    setBatchKey(nextBatchKey);
+                    setResults([]);
+                    setAiResponse(null);
+                    setAiStatus('idle');
+                    setAiError('');
                   }}
                 >
                   <SelectTrigger
                     aria-label="Batch requirements"
+                    aria-required="true"
                     className="h-11 w-full rounded-xl border-white/10 bg-[#101317] px-3 text-zinc-100 shadow-none hover:bg-[#13171b] focus-visible:border-emerald-400/50 focus-visible:ring-emerald-400/10 data-[size=default]:h-11"
                   >
                     <ShieldCheck aria-hidden="true" className="size-4 text-zinc-500" />
@@ -946,7 +1301,9 @@ export default function Home() {
                   </SelectContent>
                 </Select>
                 <span className="mt-2 block text-xs text-zinc-600">
-                  {selectedBatch.bugs} bugs minimum · {selectedBatch.features} feature requests minimum
+                  {selectedBatch
+                    ? `${selectedBatch.bugs} bugs minimum · ${selectedBatch.features} feature requests minimum`
+                    : 'Select a batch or paste JSON to detect it automatically'}
                 </span>
               </label>
             </div>
@@ -954,7 +1311,9 @@ export default function Home() {
             <div className="rounded-2xl border border-white/10 bg-[#0d1013]">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/8 px-4 py-3">
                 <div>
-                  <p className="text-sm font-medium">Rubrics JSON array</p>
+                  <p className="text-sm font-medium">
+                    Rubrics JSON array <span className="text-rose-400">*</span>
+                  </p>
                   <p className="mt-0.5 text-xs text-zinc-500">Paste the full batch as a JSON array.</p>
                 </div>
                 <div className="flex gap-2">
@@ -970,14 +1329,10 @@ export default function Home() {
               </div>
               <Textarea
                 id="rubrics-json"
+                aria-required="true"
+                required
                 value={jsonInput}
-                onChange={(event) => {
-                  setJsonInput(event.target.value);
-                  setResults([]);
-                  setAiResponse(null);
-                  setAiStatus('idle');
-                  setAiError('');
-                }}
+                onChange={(event) => updateJsonInput(event.target.value)}
                 placeholder={'[\n  {\n    "criterion": "Home: observable issue",\n    "score": 10,\n    "tags": ["bug"],\n    "forms": { ... }\n  }\n]'}
                 spellCheck={false}
                 className="h-[430px] min-h-[430px] max-h-[430px] resize-none overflow-y-auto rounded-none border-0 bg-transparent p-5 font-mono text-[12px] leading-6 text-zinc-300 shadow-none focus-visible:ring-0"
@@ -1022,7 +1377,7 @@ export default function Home() {
               </div>
             )}
 
-            {hasInput && !batchRequirementsMet && (
+            {hasInput && liveBatchSummary && !batchRequirementsMet && (
               <div
                 role="alert"
                 className="flex gap-3 rounded-xl border border-rose-500/35 bg-rose-500/10 p-4 text-sm text-rose-200"
@@ -1052,7 +1407,7 @@ export default function Home() {
               <Button
                 variant="outline"
                 onClick={reset}
-                disabled={isRunning || !hasInput}
+                disabled={isRunning || !hasFormValue}
                 className="h-11 border-white/10 bg-transparent px-5 text-zinc-300 hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <RefreshCcw /> Clear Fields
@@ -1065,9 +1420,11 @@ export default function Home() {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-medium">Batch requirements</p>
-                  <p className="mt-1 text-xs text-zinc-500">{selectedBatch.label}</p>
+                  <p className="mt-1 text-xs text-zinc-500">
+                    {selectedBatch?.label ?? 'No batch selected'}
+                  </p>
                 </div>
-                {hasInput && (
+                {hasInput && selectedBatch && (
                   <Badge
                     className={
                       batchRequirementsMet
@@ -1081,7 +1438,7 @@ export default function Home() {
               </div>
 
               <div className="mt-4 space-y-2">
-                {liveBatchSummary.checks.map((check) => (
+                {liveBatchSummary ? liveBatchSummary.checks.map((check) => (
                   <div
                     key={check.label}
                     className="flex items-center justify-between gap-4 rounded-xl border border-white/7 bg-white/[0.02] px-3.5 py-3"
@@ -1102,7 +1459,11 @@ export default function Home() {
                         ))}
                     </div>
                   </div>
-                ))}
+                )) : (
+                  <div className="rounded-xl border border-dashed border-white/10 px-4 py-6 text-center text-xs text-zinc-600">
+                    Select a batch or paste a complete JSON array to view its requirements.
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1143,10 +1504,12 @@ export default function Home() {
                       href={source.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="flex items-start gap-2 text-xs leading-5 text-indigo-300 hover:text-indigo-200"
+                      className="flex min-w-0 max-w-full items-start gap-2 overflow-hidden text-xs leading-5 text-indigo-300 hover:text-indigo-200"
                     >
                       <ExternalLink className="mt-0.5 size-3 shrink-0" />
-                      {source.title || source.url}
+                      <span className="min-w-0 [overflow-wrap:anywhere]">
+                        {source.title || source.url}
+                      </span>
                     </a>
                   ))}
                 </div>
@@ -1168,12 +1531,12 @@ export default function Home() {
               {PRODUCT_NAME} is validating {application} rubrics…
             </h2>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 sm:text-base">
-              The documentation-grounded semantic and grammar review may take several minutes.
+              Grammar review and feature-capability documentation checks may take several minutes.
             </p>
           </section>
         )}
 
-        {aiStatus === 'ready' && aiResponse && results.length > 0 && (
+        {aiStatus === 'ready' && aiResponse && application && liveBatchSummary && results.length > 0 && (
           <section className="mt-10 border-t border-white/8 pt-8">
             <div className="rounded-2xl border border-white/10 bg-[#0d1013] p-5 sm:p-6">
               <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
@@ -1241,15 +1604,23 @@ export default function Home() {
                 const statusLabel = hasErrors
                   ? 'Failed to pass'
                   : hasWarnings
-                    ? 'Pass with warnings'
+                    ? 'Passed with warnings'
                     : 'Valid';
                 const statusClass = hasErrors
                   ? 'border-rose-500/25 bg-rose-500/10 text-rose-300'
                   : hasWarnings
                     ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
                     : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
+                const declaredTag = result.rubric.tags[0]?.toLowerCase() || 'untagged';
+                const tagClass = declaredTag === 'bug'
+                  ? 'border-orange-400/25 bg-orange-400/10 text-orange-200'
+                  : 'border-indigo-400/20 bg-indigo-400/[0.08] text-indigo-200';
                 const criterionSection =
                   result.aiReview?.criterionSection || result.rubric.criterion.split(':')[0] || 'Unknown';
+                const hasCorrectedRubric = rubricHasChanges(
+                  result.rubric,
+                  result.aiReview?.correctedRubric,
+                );
 
                 return (
                   <details
@@ -1281,6 +1652,7 @@ export default function Home() {
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="font-mono text-xs text-zinc-500">#{result.index + 1}</span>
                             <Badge className={'border text-[10px] ' + statusClass}>{statusLabel}</Badge>
+                            <Badge className={'border text-[10px] ' + tagClass}>{declaredTag}</Badge>
                             <span className="text-xs text-zinc-600">
                               {result.errorCount} errors · {result.warningCount} warnings
                             </span>
@@ -1294,14 +1666,7 @@ export default function Home() {
                         <div className="hidden text-right md:block">
                           <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Criterion section</p>
                           <p
-                            className={
-                              'mt-1 text-xs font-medium ' +
-                              (result.aiReview?.sectionMatch === 'mismatch'
-                                ? 'text-rose-300'
-                                : result.aiReview?.sectionMatch === 'unclear'
-                                  ? 'text-amber-300'
-                                  : 'text-emerald-300')
-                            }
+                            className="mt-1 text-xs font-medium text-zinc-300"
                           >
                             {criterionSection}
                           </p>
@@ -1316,35 +1681,19 @@ export default function Home() {
                     <div className="space-y-6 border-t border-white/8 px-5 py-5">
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Criterion</p>
-                        <p className="mt-2 text-sm leading-6 text-zinc-200">{result.rubric.criterion}</p>
+                        <HighlightedFieldValue
+                          value={result.rubric.criterion}
+                          correctedValue={result.aiReview?.correctedRubric.criterion}
+                          field="criterion"
+                          findings={result.findings}
+                          className="mt-2 text-sm leading-6 text-zinc-200"
+                        />
                         <div className="mt-4 flex flex-wrap gap-x-8 gap-y-2 text-xs text-zinc-500">
                           <p>Declared tag: <strong className="text-zinc-300">{result.rubric.tags.join(', ') || 'missing'}</strong></p>
                           <p>
-                            Inferred tag:{' '}
-                            <strong
-                              className={
-                                result.aiReview?.inferredTag === 'unclear'
-                                  ? 'text-amber-300'
-                                  : result.aiReview?.inferredTag === result.rubric.tags[0]?.toLowerCase()
-                                    ? 'text-emerald-300'
-                                    : 'text-rose-300'
-                              }
-                            >
-                              {result.aiReview?.inferredTag || 'unclear'}
-                            </strong>
-                          </p>
-                          <p>
-                            Section match:{' '}
-                            <strong
-                              className={
-                                result.aiReview?.sectionMatch === 'mismatch'
-                                  ? 'text-rose-300'
-                                  : result.aiReview?.sectionMatch === 'unclear'
-                                    ? 'text-amber-300'
-                                    : 'text-emerald-300'
-                              }
-                            >
-                              {result.aiReview?.sectionMatch || 'unclear'}
+                            Review scope:{' '}
+                            <strong className="text-zinc-300">
+                              {isFeatureRequest(result.rubric) ? 'Grammar + feature capability' : 'Grammar only'}
                             </strong>
                           </p>
                         </div>
@@ -1353,19 +1702,43 @@ export default function Home() {
                       <div className="grid gap-3 md:grid-cols-2">
                         <div className="rounded-xl border border-white/7 bg-white/[0.02] p-4">
                           <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Page or workflow</p>
-                          <p className="mt-2 text-xs leading-5 text-zinc-300">{result.rubric.forms.page_or_workflow}</p>
+                          <HighlightedFieldValue
+                            value={result.rubric.forms.page_or_workflow}
+                            correctedValue={result.aiReview?.correctedRubric.forms.page_or_workflow}
+                            field="page_or_workflow"
+                            findings={result.findings}
+                            className="mt-2 whitespace-pre-wrap text-xs leading-5 text-zinc-300"
+                          />
                         </div>
                         <div className="rounded-xl border border-white/7 bg-white/[0.02] p-4">
                           <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Reproduction steps</p>
-                          <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-zinc-300">{result.rubric.forms.reproduction_steps}</p>
+                          <HighlightedFieldValue
+                            value={result.rubric.forms.reproduction_steps}
+                            correctedValue={result.aiReview?.correctedRubric.forms.reproduction_steps}
+                            field="reproduction_steps"
+                            findings={result.findings}
+                            className="mt-2 whitespace-pre-wrap text-xs leading-5 text-zinc-300"
+                          />
                         </div>
                         <div className="rounded-xl border border-white/7 bg-white/[0.02] p-4">
                           <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Expected behavior</p>
-                          <p className="mt-2 text-xs leading-5 text-zinc-300">{result.rubric.forms.expected_behavior}</p>
+                          <HighlightedFieldValue
+                            value={result.rubric.forms.expected_behavior}
+                            correctedValue={result.aiReview?.correctedRubric.forms.expected_behavior}
+                            field="expected_behavior"
+                            findings={result.findings}
+                            className="mt-2 whitespace-pre-wrap text-xs leading-5 text-zinc-300"
+                          />
                         </div>
                         <div className="rounded-xl border border-white/7 bg-white/[0.02] p-4">
                           <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-600">Actual behavior</p>
-                          <p className="mt-2 text-xs leading-5 text-zinc-300">{result.rubric.forms.actual_behavior}</p>
+                          <HighlightedFieldValue
+                            value={result.rubric.forms.actual_behavior}
+                            correctedValue={result.aiReview?.correctedRubric.forms.actual_behavior}
+                            field="actual_behavior"
+                            findings={result.findings}
+                            className="mt-2 whitespace-pre-wrap text-xs leading-5 text-zinc-300"
+                          />
                         </div>
                       </div>
 
@@ -1374,7 +1747,7 @@ export default function Home() {
                           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Documentation review</p>
                           {result.aiReview && (
                             <Badge className={docsBadge(result.aiReview.documentationStatus)}>
-                              {result.aiReview.documentationStatus.replace('_', ' ')}
+                              {result.aiReview.documentationStatus.replaceAll('_', ' ')}
                             </Badge>
                           )}
                         </div>
@@ -1383,25 +1756,37 @@ export default function Home() {
                         </p>
                       </div>
 
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Findings and corrections</p>
-                        {result.findings.length > 0 ? (
+                      {result.findings.length > 0 ? (
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Findings and corrections</p>
                           <div className="mt-3 space-y-2">
-                            {result.findings.map((finding, findingIndex) => (
-                              <div
-                                key={`${finding.field}-${findingIndex}`}
-                                className={
-                                  'rounded-xl border p-4 ' +
-                                  (finding.severity === 'error'
-                                    ? 'border-rose-500/20 bg-rose-500/[0.06]'
-                                    : 'border-amber-500/20 bg-amber-500/[0.06]')
-                                }
-                              >
+                            {result.findings.map((finding, findingIndex) => {
+                              const correctedText = correctedTextForFinding(
+                                finding,
+                                result.rubric,
+                                result.aiReview?.correctedRubric,
+                              );
+
+                              return (
+                                <div
+                                  key={`${finding.field}-${findingIndex}`}
+                                  className={
+                                    'rounded-xl border p-4 ' +
+                                    (finding.severity === 'error'
+                                      ? 'border-rose-500/20 bg-rose-500/[0.06]'
+                                      : 'border-amber-500/20 bg-amber-500/[0.06]')
+                                  }
+                                >
                                 <div className="flex flex-wrap items-center gap-2">
                                   <Badge className={finding.severity === 'error' ? 'bg-rose-500/15 text-rose-200' : 'bg-amber-500/15 text-amber-200'}>
                                     {finding.severity}
                                   </Badge>
                                   <Badge className="bg-white/5 font-mono text-[10px] text-zinc-400">{finding.field}</Badge>
+                                  {typeof finding.lineNumber === 'number' && (
+                                    <Badge className="bg-white/5 font-mono text-[10px] text-zinc-400">
+                                      line {finding.lineNumber}
+                                    </Badge>
+                                  )}
                                   <strong className={finding.severity === 'error' ? 'text-xs text-rose-100' : 'text-xs text-amber-100'}>
                                     {finding.message}
                                   </strong>
@@ -1409,22 +1794,47 @@ export default function Home() {
                                 <p className="mt-2 text-xs leading-5 text-zinc-400">
                                   <span className="font-medium text-zinc-300">Recommended change:</span> {finding.suggestion}
                                 </p>
-                              </div>
-                            ))}
+                                {correctedText && (
+                                  <div className="mt-3 rounded-lg border border-emerald-500/15 bg-emerald-500/[0.05] px-3 py-2">
+                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400/80">
+                                      Corrected rubric
+                                    </p>
+                                    <p className="mt-1 whitespace-pre-wrap text-xs leading-5 text-emerald-100">
+                                      {correctedText}
+                                    </p>
+                                  </div>
+                                )}
+                                </div>
+                              );
+                            })}
                           </div>
-                        ) : (
+                        </div>
+                      ) : !hasErrors && !hasWarnings ? (
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Findings and corrections</p>
                           <div className="mt-3 flex gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/[0.05] p-4 text-sm text-emerald-300">
                             <CheckCircle2 className="size-4 shrink-0" />
                             No changes requested for this rubric.
                           </div>
-                        )}
-                      </div>
+                        </div>
+                      ) : null}
 
-                      {result.findings.length > 0 && result.aiReview?.correctedRubric && (
-                        <details className="rounded-xl border border-indigo-400/15 bg-indigo-400/[0.035]">
-                          <summary className="cursor-pointer list-none px-4 py-3 text-xs font-medium text-indigo-200">
+                      {result.findings.length > 0 && hasCorrectedRubric && result.aiReview?.correctedRubric && (
+                        <details className="relative rounded-xl border border-indigo-400/15 bg-indigo-400/[0.035]">
+                          <summary className="cursor-pointer list-none py-3 pr-36 pl-4 text-xs font-medium text-indigo-200">
                             View corrected JSON preview
                           </summary>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            aria-label={`Copy corrected JSON for rubric ${result.index + 1}`}
+                            onClick={() => copyCorrectedRubric(result.index, result.aiReview!.correctedRubric)}
+                            className="absolute top-1.5 right-2 h-8 text-xs text-indigo-300 hover:bg-indigo-400/10 hover:text-indigo-200"
+                          >
+                            {copiedRubricIndex === result.index ? <Check /> : <Copy />}
+                            {copiedRubricIndex === result.index ? 'Copied' : 'Copy JSON'}
+                          </Button>
                           <pre className="overflow-x-auto border-t border-indigo-400/10 p-4 font-mono text-[11px] leading-5 text-zinc-400">
                             {JSON.stringify(result.aiReview.correctedRubric, null, 2)}
                           </pre>
