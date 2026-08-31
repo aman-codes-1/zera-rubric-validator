@@ -4,6 +4,8 @@ AI-powered quality assurance for bug and feature-request rubrics, with documenta
 
 **Live app:** [zera-rubric-validator.vercel.app](https://zera-rubric-validator.vercel.app/)
 
+**Agent trajectories:** [View the representative agent trajectories PDF](./Zera-Agent-Trajectories.pdf)
+
 Zera validates complete rubric batches before submission. It combines strict JSON and batch checks with an OpenAI-assisted review that grammar-checks every text field, validates feature-request capabilities against current product documentation, and produces corrected JSON when changes are needed. Bug rubrics receive grammar review only.
 
 ## The problem
@@ -166,7 +168,7 @@ If the main AI review fails or returns incomplete results, Zera does not produce
 - Tailwind CSS
 - shadcn/ui and Base UI
 - OpenAI Responses API with web search and structured outputs
-- Cloudflare Workers and static assets for hosted execution
+- Vercel Functions through a Next.js Route Handler for hosted execution
 
 ## Local setup
 
@@ -200,34 +202,47 @@ OPENAI_MODEL=gpt-5.4-mini
 
 Keep `OPENAI_API_KEY` private. It is used only by the server-side validation worker and must never be exposed in client-side code.
 
+`DEV_HOST` and `DEV_PORT` are used only by the custom local development server. Do not set `DEV_HOST` to the Vercel domain.
+
 ### Start the development server
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [https://zera-rubric-validator.vercel.app/](Zera for Feather).
 
 ## Available scripts
 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Starts Next.js with the local `/api/validate` handler. |
-| `npm run build` | Creates the production Next.js export and prepares the worker output. |
-| `npm run start` | Runs the prepared Cloudflare Worker build locally with Wrangler. |
+| `npm run build` | Creates the server-capable production Next.js build used by Vercel. |
+| `npm run start` | Runs the production Next.js build locally. |
 | `npm run lint` | Checks the codebase with Oxlint. |
 | `npm run format` | Formats the project with Oxfmt. |
+
+## Vercel deployment
+
+1. Import the GitHub repository into Vercel and keep the detected framework as **Next.js**.
+2. Leave the build command as `npm run build`; do not configure the output directory as `out`.
+3. Add `OPENAI_API_KEY` in **Project Settings → Environment Variables** for Production and Preview.
+4. Optionally add `OPENAI_MODEL`; the server defaults to `gpt-5.4-mini` when it is omitted.
+5. Redeploy after saving the environment variables.
+
+The browser calls the same-origin `/api/validate` endpoint. No Vercel domain needs to be registered with OpenAI, and the API key remains available only to the server-side Route Handler.
 
 ## Project structure
 
 ```text
 app/                        Next.js interface and application metadata
+app/api/validate/route.ts   Vercel-compatible validation Route Handler
 components/ui/              Reusable interface components
 lib/constants.mjs           Shared Zera product naming
 scripts/dev-server.mjs      Local Next.js server and validation API bridge
 scripts/prepare-sites-output.mjs
-                            Production output preparation
-worker/feather-worker.js     OpenAI review and hosted request handling
+                            Legacy Cloudflare static-export preparation
+worker/feather-worker.js     Shared OpenAI review logic and Cloudflare adapter
 ```
 
 ## Validation outcomes
