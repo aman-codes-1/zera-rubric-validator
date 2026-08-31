@@ -44,10 +44,14 @@ import {
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
 import { PRODUCT_NAME, PRODUCT_TITLE } from '@/lib/constants.mjs';
+import {
+  SUPPORTED_APPLICATION_IDS,
+  SUPPORTED_APPLICATIONS,
+  getSupportedApplication,
+} from '@/lib/applications.mjs';
 
 type BatchKey = 'Batch A' | 'Batch B' | 'Batch C';
-const APPLICATIONS = ['quickbooks', 'workday'] as const;
-type Application = (typeof APPLICATIONS)[number];
+type Application = string;
 type IssueSeverity = 'error' | 'warning';
 type IssueKind = 'grammar' | 'documentation' | 'validation';
 type AiStatus = 'idle' | 'researching' | 'ready' | 'unavailable';
@@ -112,8 +116,19 @@ type AiReview = {
 
 type AiResponse = {
   applicationBrief: string;
+  applicationsReviewed: Array<{
+    id: string;
+    name: string;
+    role: 'selected' | 'detected_in_rubrics';
+    officialDomains: string[];
+    documentationSources: Array<{ title: string; url: string }>;
+  }>;
   rubricReviews: AiReview[];
-  sources: Array<{ title: string; url: string }>;
+  sources: Array<{
+    title: string;
+    url: string;
+    application?: string | null;
+  }>;
 };
 
 type CorrectionTarget = {
@@ -150,19 +165,6 @@ const BATCHES: Record<
 };
 
 const VALID_TAGS = new Set(['bug', 'feature request']);
-const APPLICATION_METADATA: Record<
-  Application,
-  { label: string; pattern: string }
-> = {
-  quickbooks: {
-    label: 'QuickBooks',
-    pattern: '\\bQuickBooks(?:\\s+Online)?\\b',
-  },
-  workday: {
-    label: 'Workday',
-    pattern: '\\bWorkday\\b',
-  },
-};
 const DOCUMENTATION_AI_FIELDS = new Set([
   'criterion',
   'expected_behavior',
@@ -457,50 +459,6 @@ function validateRubric(rubric: RubricRecord): Issue[] {
   return issues;
 }
 
-function validateApplicationMatch(
-  rubric: RubricRecord,
-  selectedApplication: Application,
-): Issue[] {
-  const selectedLabel = APPLICATION_METADATA[selectedApplication].label;
-  const fields = [
-    ['criterion', rubric.criterion],
-    ['page_or_workflow', rubric.forms.page_or_workflow],
-    ['reproduction_steps', rubric.forms.reproduction_steps],
-    ['expected_behavior', rubric.forms.expected_behavior],
-    ['actual_behavior', rubric.forms.actual_behavior],
-  ] as const;
-
-  return APPLICATIONS.filter(
-    (applicationName) => applicationName !== selectedApplication,
-  ).flatMap((applicationName) => {
-    const mismatchedApplication = APPLICATION_METADATA[applicationName];
-
-    return fields.flatMap(([field, value]) => {
-      const matcher = new RegExp(mismatchedApplication.pattern, 'i');
-      const match = matcher.exec(value);
-      if (!match || typeof match.index !== 'number') return [];
-
-      const lineNumber = value.slice(0, match.index).split('\n').length;
-      const correctedText = value.replace(
-        new RegExp(mismatchedApplication.pattern, 'gi'),
-        selectedLabel,
-      );
-
-      return [{
-        code: 'application_mismatch' as const,
-        kind: 'documentation' as const,
-        field,
-        severity: 'error' as const,
-        message: `This field references ${mismatchedApplication.label}, but ${selectedLabel} is the selected application.`,
-        suggestion: `Select ${mismatchedApplication.label} as the application, or update this field to target ${selectedLabel}.`,
-        lineNumber,
-        excerpt: match[0],
-        correctedText,
-      }];
-    });
-  });
-}
-
 function buildBatchSummary(rubrics: RubricRecord[], key: BatchKey): BatchSummary {
   const requirement = BATCHES[key];
   const bugs = rubrics.filter(
@@ -661,6 +619,54 @@ function docsStatusLabel(status: AiReview['documentationStatus']) {
   if (status === 'not_found') return 'not found · skipped';
   if (status === 'unclear') return 'unclear · skipped';
   return status.replaceAll('_', ' ');
+}
+
+function messageWithReferenceLinks(message: string) {
+  const references: Array<{ title: string; url: string }> = [];
+  const text = message
+    .replace(
+      /\[([^\]]+)]\((https?:\/\/[^)\s]+)\)/g,
+      (_match, title: string, url: string) => {
+        if (!references.some((reference) => reference.url === url)) {
+          references.push({ title, url });
+        }
+        return '';
+      },
+    )
+    .replace(/\(\s*\)/g, '')
+    .replace(/\s+([,.;:!?])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  return { text, references };
+}
+
+function displayedDocumentationSources(
+  sources: AiResponse['sources'],
+  applicationsReviewed: AiResponse['applicationsReviewed'],
+) {
+  const selected: AiResponse['sources'] = [];
+  const seen = new Set<string>();
+
+  for (const application of applicationsReviewed) {
+    const source = sources.find(
+      (candidate) => candidate.application === application.name && !seen.has(candidate.url),
+    );
+    if (source) {
+      selected.push(source);
+      seen.add(source.url);
+    }
+  }
+
+  for (const source of sources) {
+    if (selected.length >= 8) break;
+    if (!seen.has(source.url)) {
+      selected.push(source);
+      seen.add(source.url);
+    }
+  }
+
+  return selected;
 }
 
 function rubricFieldValue(rubric: RubricRecord | undefined, field: string) {
@@ -1251,16 +1257,7 @@ export default function Home() {
     () =>
       results.map((result) => {
         const responseReview = aiResponse?.rubricReviews.find((review) => review.index === result.index);
-        const deterministicMismatchFindings = result.issues.filter(
-          (finding) => finding.code === 'application_mismatch',
-        );
-        const normalizedReview = responseReview && deterministicMismatchFindings.length > 0
-          ? {
-              ...responseReview,
-              documentationStatus: 'application_mismatch' as const,
-              documentationSummary: deterministicMismatchFindings[0].message,
-            }
-          : responseReview &&
+        const normalizedReview = responseReview &&
               !isFeatureRequest(result.rubric) &&
               responseReview.documentationStatus !== 'application_mismatch'
             ? {
@@ -1276,10 +1273,6 @@ export default function Home() {
               result.rubric,
               normalizedReview?.documentationStatus,
             ),
-          )
-          .filter((finding) =>
-            finding.kind !== 'documentation' ||
-            deterministicMismatchFindings.length === 0,
           )
           .map((finding) =>
             normalizedReview?.documentationStatus === 'application_mismatch' &&
@@ -1384,6 +1377,13 @@ export default function Home() {
             badgeClass: 'border-emerald-500/25 bg-emerald-500/12 text-emerald-300',
             submissionClass: 'border-emerald-500/20 bg-emerald-500/8 text-emerald-200',
           };
+  const documentationSources = useMemo(
+    () => displayedDocumentationSources(
+      aiResponse?.sources || [],
+      aiResponse?.applicationsReviewed || [],
+    ),
+    [aiResponse],
+  );
   const selectedBatch = batchKey ? BATCHES[batchKey] : null;
   const hasInput = Boolean(jsonInput.trim());
   const hasFormValue = Boolean(application || batchKey || hasInput);
@@ -1554,10 +1554,7 @@ export default function Home() {
       const validatedResults = rubrics.map((rubric, index) => ({
         index,
         rubric,
-        issues: [
-          ...validateRubric(rubric),
-          ...validateApplicationMatch(rubric, application),
-        ],
+        issues: validateRubric(rubric),
       }));
 
       setResults(validatedResults);
@@ -1674,12 +1671,12 @@ export default function Home() {
                   Application <span className="text-rose-400">*</span>
                 </span>
                 <Combobox
-                  items={APPLICATIONS}
+                  items={SUPPORTED_APPLICATION_IDS}
                   value={application}
                   onValueChange={(value) => {
                     const nextApplication =
-                      value && APPLICATIONS.includes(value as Application)
-                        ? (value as Application)
+                      value && getSupportedApplication(value)
+                        ? value
                         : null;
                     setApplication(nextApplication);
                     setResults([]);
@@ -1713,14 +1710,14 @@ export default function Home() {
                           value={item}
                           className="min-h-9 px-3 font-mono data-highlighted:bg-indigo-400/15 data-highlighted:text-indigo-100"
                         >
-                          {item}
+                          {getSupportedApplication(item)?.label || item}
                         </ComboboxItem>
                       )}
                     </ComboboxList>
                   </ComboboxContent>
                 </Combobox>
                 <span className="mt-2 block text-xs text-zinc-600">
-                  {APPLICATIONS.length} supported applications
+                  {SUPPORTED_APPLICATIONS.length} supported applications
                 </span>
               </label>
 
@@ -1956,18 +1953,39 @@ export default function Home() {
                 <p className="mt-4 text-xs leading-5 text-zinc-400">{aiResponse.applicationBrief}</p>
               )}
 
+              {aiResponse?.applicationsReviewed?.length ? (
+                <div className="mt-4 border-t border-white/8 pt-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">
+                    Applications reviewed
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {aiResponse.applicationsReviewed.map((reviewedApplication) => (
+                      <Badge
+                        key={`${reviewedApplication.role}-${reviewedApplication.name}`}
+                        className={reviewedApplication.role === 'selected'
+                          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                          : 'border-indigo-400/30 bg-indigo-400/10 text-indigo-200'}
+                      >
+                        {reviewedApplication.name}
+                        {reviewedApplication.role === 'selected' ? ' · selected' : ' · found in rubrics'}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               {aiError && (
                 <div className="mt-4 rounded-xl border border-amber-500/25 bg-amber-500/8 p-3 text-xs leading-5 text-amber-200">
                   {aiError}
                 </div>
               )}
 
-              {aiResponse?.sources.length ? (
+              {documentationSources.length ? (
                 <div className="mt-4 space-y-2 border-t border-white/8 pt-4">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">
                     Documentation sources
                   </p>
-                  {aiResponse.sources.slice(0, 5).map((source) => (
+                  {documentationSources.map((source) => (
                     <a
                       key={source.url}
                       href={source.url}
@@ -1976,8 +1994,17 @@ export default function Home() {
                       className="flex min-w-0 max-w-full items-start gap-2 overflow-hidden text-xs leading-5 text-indigo-300 hover:text-indigo-200"
                     >
                       <ExternalLink className="mt-0.5 size-3 shrink-0" />
-                      <span className="min-w-0 [overflow-wrap:anywhere]">
-                        {source.title || source.url}
+                      <span className="min-w-0 flex-1">
+                        <span className="block">
+                          {source.application ? (
+                            <span className="mr-1.5 inline-flex rounded border border-white/10 bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-medium text-zinc-400">
+                              {source.application}
+                            </span>
+                          ) : null}
+                          <span className="[overflow-wrap:anywhere]">
+                            {source.title || 'Official documentation'}
+                          </span>
+                        </span>
                       </span>
                     </a>
                   ))}
@@ -2250,6 +2277,9 @@ export default function Home() {
                                 result.rubric,
                                 result.aiReview?.correctedRubric,
                               );
+                              const displayedMessage = messageWithReferenceLinks(
+                                finding.message,
+                              );
 
                               return (
                                 <div
@@ -2287,8 +2317,23 @@ export default function Home() {
                                     </Badge>
                                   )}
                                   <strong className={finding.severity === 'error' ? 'text-xs text-rose-100' : 'text-xs text-amber-100'}>
-                                    {finding.message}
+                                    {displayedMessage.text}
                                   </strong>
+                                  {displayedMessage.references.map((reference, referenceIndex) => (
+                                    <a
+                                      key={reference.url}
+                                      href={reference.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      title={reference.title}
+                                      className="inline-flex items-center gap-1 rounded-md border border-indigo-400/25 bg-indigo-400/10 px-2 py-1 text-[10px] font-medium text-indigo-200 transition-colors hover:border-indigo-300/40 hover:bg-indigo-400/15 hover:text-indigo-100"
+                                    >
+                                      <ExternalLink className="size-3" />
+                                      {displayedMessage.references.length > 1
+                                        ? `Open reference doc ${referenceIndex + 1}`
+                                        : 'Open reference doc'}
+                                    </a>
+                                  ))}
                                 </div>
                                 <p className="mt-2 text-xs leading-5 text-zinc-400">
                                   <span className="font-medium text-zinc-300">Recommended change:</span> {recommendedChange}
