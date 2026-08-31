@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   BadgeCheck,
@@ -49,7 +49,7 @@ type BatchKey = 'Batch A' | 'Batch B' | 'Batch C';
 const APPLICATIONS = ['quickbooks', 'workday'] as const;
 type Application = (typeof APPLICATIONS)[number];
 type IssueSeverity = 'error' | 'warning';
-type IssueKind = 'grammar' | 'documentation';
+type IssueKind = 'grammar' | 'documentation' | 'validation';
 type AiStatus = 'idle' | 'researching' | 'ready' | 'unavailable';
 
 type RubricRecord = {
@@ -65,6 +65,7 @@ type RubricRecord = {
 };
 
 type Issue = {
+  code?: 'application_mismatch' | 'non_testable_expected_behavior';
   kind?: IssueKind;
   field: string;
   severity: IssueSeverity;
@@ -98,7 +99,12 @@ type BatchSummary = {
 type AiReview = {
   index: number;
   criterionSection: string;
-  documentationStatus: 'supported' | 'unclear' | 'not_found' | 'not_applicable';
+  documentationStatus:
+    | 'supported'
+    | 'unclear'
+    | 'not_found'
+    | 'not_applicable'
+    | 'application_mismatch';
   documentationSummary: string;
   findings: Issue[];
   correctedRubric: RubricRecord;
@@ -116,6 +122,8 @@ type CorrectionTarget = {
   originalText: string;
   messages: string[];
   suggestions: string[];
+  kinds: IssueKind[];
+  documentationSummary: string;
 };
 
 type CorrectionPatch = {
@@ -142,6 +150,19 @@ const BATCHES: Record<
 };
 
 const VALID_TAGS = new Set(['bug', 'feature request']);
+const APPLICATION_METADATA: Record<
+  Application,
+  { label: string; pattern: string }
+> = {
+  quickbooks: {
+    label: 'QuickBooks',
+    pattern: '\\bQuickBooks(?:\\s+Online)?\\b',
+  },
+  workday: {
+    label: 'Workday',
+    pattern: '\\bWorkday\\b',
+  },
+};
 const DOCUMENTATION_AI_FIELDS = new Set([
   'criterion',
   'expected_behavior',
@@ -224,7 +245,10 @@ function validateRubricFormat(value: unknown, index: number) {
       FORM_KEYS.forEach((key) => {
         if (
           key in forms &&
-          (typeof forms[key] !== 'string' || !forms[key].trim())
+          (
+            typeof forms[key] !== 'string' ||
+            (key !== 'reproduction_steps' && !forms[key].trim())
+          )
         ) {
           issues.push(`${path} → forms.${key} must be a non-empty string.`);
         }
@@ -238,6 +262,11 @@ function validateRubricFormat(value: unknown, index: number) {
 function readString(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
 }
+
+function readExactString(value: unknown) {
+  return typeof value === 'string' ? value : '';
+}
+
 function normalizeRubric(value: unknown): RubricRecord {
   const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
   const formsValue =
@@ -254,7 +283,7 @@ function normalizeRubric(value: unknown): RubricRecord {
     tags,
     forms: {
       page_or_workflow: readString(formsValue.page_or_workflow),
-      reproduction_steps: readString(formsValue.reproduction_steps),
+      reproduction_steps: readExactString(formsValue.reproduction_steps),
       expected_behavior: readString(formsValue.expected_behavior),
       actual_behavior: readString(formsValue.actual_behavior),
     },
@@ -275,37 +304,71 @@ function validateOrderedSteps(value: string) {
   });
 }
 
+function correctedOrderedSteps(value: string) {
+  return value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const stepText = line.replace(/^\d+[.)]\s*/, '').trim();
+      return `${index + 1}. ${stepText}`;
+    })
+    .join('\n');
+}
+
+function firstInvalidOrderedStep(value: string) {
+  const lines = value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const index = lines.findIndex((line, lineIndex) => {
+    const match = line.match(/^(\d+)[.)]\s+\S/);
+    return !match || Number(match[1]) !== lineIndex + 1;
+  });
+
+  return index < 0 ? null : { lineNumber: index + 1, excerpt: lines[index] };
+}
+
 function validateRubric(rubric: RubricRecord): Issue[] {
   const issues: Issue[] = [];
   const tag = rubric.tags[0]?.toLowerCase();
 
   if (!rubric.criterion) {
     issues.push({
+      kind: 'validation',
       field: 'criterion',
       severity: 'error',
       message: 'Criterion is missing.',
       suggestion: 'Add a specific, observable criterion.',
     });
-  } else if (!/^[A-Z][^:\n]{0,80}:\s+\S/.test(rubric.criterion)) {
+  } else if (!/^[A-Z][A-Za-z0-9 &/()'’-]{1,79}:\s+\S/.test(rubric.criterion)) {
     issues.push({
+      kind: 'validation',
       field: 'criterion',
       severity: 'error',
-      message: 'Criterion must start with a capitalized section followed by a colon.',
-      suggestion: 'Use a prefix such as “Home:” or “Account Settings:”.',
+      message: 'Criterion must follow the “Section: description” format.',
+      suggestion: 'Start with the relevant section and a colon, for example: “Invoice: The \"Edit\" action should be enabled.”',
+      excerpt: rubric.criterion,
+      lineNumber: 1,
     });
   }
 
-  if (rubric.score === null) {
+  if (rubric.score !== 10) {
     issues.push({
+      kind: 'validation',
       field: 'score',
-      severity: 'warning',
-      message: 'Score is missing or is not numeric.',
-      suggestion: 'Provide a numeric score for this rubric.',
+      severity: 'error',
+      message: 'Score must be the number 10.',
+      suggestion: 'Set score to 10.',
+      correctedText: '10',
+      excerpt: rubric.score === null ? '' : String(rubric.score),
+      lineNumber: 1,
     });
   }
 
   if (rubric.tags.length !== 1) {
     issues.push({
+      kind: 'validation',
       field: 'tags',
       severity: 'error',
       message: 'Every rubric must have exactly one tag.',
@@ -313,6 +376,7 @@ function validateRubric(rubric: RubricRecord): Issue[] {
     });
   } else if (!VALID_TAGS.has(tag)) {
     issues.push({
+      kind: 'validation',
       field: 'tags',
       severity: 'error',
       message: 'The tag is not valid.',
@@ -328,8 +392,11 @@ function validateRubric(rubric: RubricRecord): Issue[] {
   ];
 
   requiredFields.forEach(([field, label]) => {
-    if (!rubric.forms[field]) {
+    const hasExactFeatureRequestRule =
+      tag === 'feature request' && field === 'reproduction_steps';
+    if (!rubric.forms[field] && !hasExactFeatureRequestRule) {
       issues.push({
+        kind: 'validation',
         field,
         severity: 'error',
         message: label + ' is missing.',
@@ -339,46 +406,99 @@ function validateRubric(rubric: RubricRecord): Issue[] {
   });
 
   if (tag === 'bug' && rubric.forms.reproduction_steps && !validateOrderedSteps(rubric.forms.reproduction_steps)) {
+    const invalidStep = firstInvalidOrderedStep(rubric.forms.reproduction_steps);
     issues.push({
+      kind: 'validation',
       field: 'reproduction_steps',
       severity: 'error',
       message: 'Bug reproduction steps must be an uninterrupted ordered list starting at 1.',
       suggestion: 'Use 1., 2., 3. and continue without skipped or repeated numbers.',
+      correctedText: correctedOrderedSteps(rubric.forms.reproduction_steps),
+      excerpt: invalidStep?.excerpt || rubric.forms.reproduction_steps,
+      lineNumber: invalidStep?.lineNumber || 1,
     });
   }
 
   if (
     tag === 'feature request' &&
-    rubric.forms.reproduction_steps &&
-    rubric.forms.reproduction_steps.toUpperCase() !== 'N/A'
+    rubric.forms.reproduction_steps !== 'N/A'
   ) {
     issues.push({
+      kind: 'validation',
       field: 'reproduction_steps',
       severity: 'error',
-      message: 'Feature-request reproduction steps must be N/A.',
+      message: 'Feature-request reproduction steps must be exactly “N/A” (case-sensitive, with no extra whitespace or content).',
       suggestion: 'Set reproduction_steps to exactly “N/A”.',
+      correctedText: 'N/A',
+      excerpt: rubric.forms.reproduction_steps,
+      lineNumber: 1,
     });
   }
 
-  if (rubric.forms.expected_behavior && rubric.forms.expected_behavior.length < 28) {
+  const genericExpectedOutcome = tag === 'feature request'
+    ? /\b(?:open|launch|start|begin|enter)\s+(?:the\s+|an?\s+)?(?:[a-z0-9-]+\s+){0,5}(?:workflow|flow|process|experience)\b(?=\s*[.!?]?$)/i.exec(
+        rubric.forms.expected_behavior,
+      )
+    : null;
+
+  if (genericExpectedOutcome) {
     issues.push({
+      code: 'non_testable_expected_behavior',
+      kind: 'documentation',
       field: 'expected_behavior',
-      severity: 'warning',
-      message: 'Expected behavior may be too generic.',
-      suggestion: 'Describe the user action, the expected system response, and the observable outcome.',
-    });
-  }
-
-  if (rubric.forms.actual_behavior && rubric.forms.actual_behavior.length < 28) {
-    issues.push({
-      field: 'actual_behavior',
-      severity: 'warning',
-      message: 'Actual behavior may be too generic.',
-      suggestion: 'Describe what actually happens and how it differs from the expectation.',
+      severity: 'error',
+      message: 'Expected behavior ends with a generic workflow description instead of a specific, user-observable result.',
+      suggestion: 'Replace the generic workflow phrase with the concrete action or outcome stated in the selected application’s official documentation.',
+      excerpt: genericExpectedOutcome[0],
+      lineNumber: 1,
     });
   }
 
   return issues;
+}
+
+function validateApplicationMatch(
+  rubric: RubricRecord,
+  selectedApplication: Application,
+): Issue[] {
+  const selectedLabel = APPLICATION_METADATA[selectedApplication].label;
+  const fields = [
+    ['criterion', rubric.criterion],
+    ['page_or_workflow', rubric.forms.page_or_workflow],
+    ['reproduction_steps', rubric.forms.reproduction_steps],
+    ['expected_behavior', rubric.forms.expected_behavior],
+    ['actual_behavior', rubric.forms.actual_behavior],
+  ] as const;
+
+  return APPLICATIONS.filter(
+    (applicationName) => applicationName !== selectedApplication,
+  ).flatMap((applicationName) => {
+    const mismatchedApplication = APPLICATION_METADATA[applicationName];
+
+    return fields.flatMap(([field, value]) => {
+      const matcher = new RegExp(mismatchedApplication.pattern, 'i');
+      const match = matcher.exec(value);
+      if (!match || typeof match.index !== 'number') return [];
+
+      const lineNumber = value.slice(0, match.index).split('\n').length;
+      const correctedText = value.replace(
+        new RegExp(mismatchedApplication.pattern, 'gi'),
+        selectedLabel,
+      );
+
+      return [{
+        code: 'application_mismatch' as const,
+        kind: 'documentation' as const,
+        field,
+        severity: 'error' as const,
+        message: `This field references ${mismatchedApplication.label}, but ${selectedLabel} is the selected application.`,
+        suggestion: `Select ${mismatchedApplication.label} as the application, or update this field to target ${selectedLabel}.`,
+        lineNumber,
+        excerpt: match[0],
+        correctedText,
+      }];
+    });
+  });
 }
 
 function buildBatchSummary(rubrics: RubricRecord[], key: BatchKey): BatchSummary {
@@ -532,14 +652,21 @@ function parseInput(value: string) {
 
 function docsBadge(status: AiReview['documentationStatus']) {
   if (status === 'supported') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
-  if (status === 'not_found') return 'border-rose-500/30 bg-rose-500/10 text-rose-300';
+  if (status === 'application_mismatch') return 'border-rose-500/30 bg-rose-500/10 text-rose-300';
   if (status === 'not_applicable') return 'border-white/10 bg-white/[0.04] text-zinc-400';
-  return 'border-amber-500/30 bg-amber-500/10 text-amber-300';
+  return 'border-white/10 bg-white/[0.04] text-zinc-400';
+}
+
+function docsStatusLabel(status: AiReview['documentationStatus']) {
+  if (status === 'not_found') return 'not found · skipped';
+  if (status === 'unclear') return 'unclear · skipped';
+  return status.replaceAll('_', ' ');
 }
 
 function rubricFieldValue(rubric: RubricRecord | undefined, field: string) {
   if (!rubric) return '';
   if (field === 'criterion') return rubric.criterion;
+  if (field === 'score') return rubric.score === null ? '' : String(rubric.score);
   if (field === 'tag') return rubric.tags.join(', ');
   if (field === 'page_or_workflow') return rubric.forms.page_or_workflow;
   if (field === 'reproduction_steps') return rubric.forms.reproduction_steps;
@@ -553,7 +680,7 @@ function correctedTextForFinding(
   originalRubric: RubricRecord,
   correctedRubric: RubricRecord | undefined,
 ) {
-  const originalText = rubricFieldValue(originalRubric, finding.field).trim();
+  const originalText = rubricFieldValue(originalRubric, finding.field);
   const findingCorrection = finding.correctedText?.trim() || '';
   if (findingCorrection && findingCorrection !== originalText) {
     return findingCorrection;
@@ -585,6 +712,7 @@ function applyFindingCorrections(
     if (!correctedText) return;
 
     if (finding.field === 'criterion') nextRubric.criterion = correctedText;
+    if (finding.field === 'score') nextRubric.score = Number(correctedText);
     if (finding.field === 'tag') nextRubric.tags = [correctedText];
     if (finding.field === 'page_or_workflow') nextRubric.forms.page_or_workflow = correctedText;
     if (finding.field === 'reproduction_steps') nextRubric.forms.reproduction_steps = correctedText;
@@ -607,6 +735,7 @@ function setRubricFieldValue(
   };
 
   if (field === 'criterion') nextRubric.criterion = value;
+  if (field === 'score') nextRubric.score = Number(value);
   if (field === 'tag') nextRubric.tags = [value];
   if (field === 'page_or_workflow') nextRubric.forms.page_or_workflow = value;
   if (field === 'reproduction_steps') nextRubric.forms.reproduction_steps = value;
@@ -632,7 +761,9 @@ function collectCorrectionTargets(
 
     const findings = [
       ...validateRubric(rubric),
-      ...review.findings.filter((finding) => isAllowedAiFinding(finding, rubric)),
+      ...review.findings.filter((finding) =>
+        isAllowedAiFinding(finding, rubric, review.documentationStatus),
+      ),
     ];
 
     findings.forEach((finding) => {
@@ -653,6 +784,8 @@ function collectCorrectionTargets(
         if (!existing.suggestions.includes(finding.suggestion)) {
           existing.suggestions.push(finding.suggestion);
         }
+        const kind = finding.kind || 'grammar';
+        if (!existing.kinds.includes(kind)) existing.kinds.push(kind);
         return;
       }
 
@@ -662,6 +795,8 @@ function collectCorrectionTargets(
         originalText,
         messages: [finding.message],
         suggestions: [finding.suggestion],
+        kinds: [finding.kind || 'grammar'],
+        documentationSummary: review.documentationSummary,
       });
     });
   });
@@ -756,6 +891,90 @@ function changedTextRange(original: string, corrected: string): [number, number]
   return [start, originalEnd];
 }
 
+function exactRecommendedChange(
+  finding: Issue,
+  rubric: RubricRecord,
+  correctedRubric: RubricRecord | undefined,
+) {
+  const completeOriginalText = rubricFieldValue(rubric, finding.field);
+  const completeCorrectedText = correctedTextForFinding(
+    finding,
+    rubric,
+    correctedRubric,
+  );
+  if (
+    !completeOriginalText ||
+    !completeCorrectedText ||
+    completeOriginalText === completeCorrectedText
+  ) {
+    return finding.suggestion;
+  }
+
+  const describeChange = (
+    originalText: string,
+    correctedText: string,
+    lineNumber?: number,
+  ) => {
+    let start = 0;
+    while (
+      start < originalText.length &&
+      start < correctedText.length &&
+      originalText[start] === correctedText[start]
+    ) {
+      start += 1;
+    }
+
+    let originalEnd = originalText.length;
+    let correctedEnd = correctedText.length;
+    while (
+      originalEnd > start &&
+      correctedEnd > start &&
+      originalText[originalEnd - 1] === correctedText[correctedEnd - 1]
+    ) {
+      originalEnd -= 1;
+      correctedEnd -= 1;
+    }
+
+    const originalFragment = originalText.slice(start, originalEnd);
+    const correctedFragment = correctedText.slice(start, correctedEnd);
+    if (originalFragment.length > 180 || correctedFragment.length > 180) {
+      return '';
+    }
+
+    const location = lineNumber ? `On line ${lineNumber}, ` : '';
+    if (originalFragment && correctedFragment) {
+      return `${location}${lineNumber ? 'replace' : 'Replace'} ${JSON.stringify(originalFragment)} with ${JSON.stringify(correctedFragment)}.`;
+    }
+    if (!originalFragment && correctedFragment) {
+      return `${location}${lineNumber ? 'insert' : 'Insert'} ${JSON.stringify(correctedFragment)} at the highlighted location.`;
+    }
+    if (originalFragment && !correctedFragment) {
+      return `${location}${lineNumber ? 'remove' : 'Remove'} ${JSON.stringify(originalFragment)} from the highlighted location.`;
+    }
+    return '';
+  };
+
+  const originalLines = completeOriginalText.split('\n');
+  const correctedLines = completeCorrectedText.split('\n');
+  if (originalLines.length > 1 && originalLines.length === correctedLines.length) {
+    const lineChanges = originalLines.flatMap((originalLine, index) => {
+      const correctedLine = correctedLines[index];
+      if (originalLine === correctedLine) return [];
+      const instruction = describeChange(originalLine, correctedLine, index + 1);
+      return instruction ? [instruction] : [];
+    });
+    if (lineChanges.length > 0) return lineChanges.join(' ');
+  }
+
+  const completeInstruction = describeChange(
+    completeOriginalText,
+    completeCorrectedText,
+  );
+  if (completeInstruction) return completeInstruction;
+
+  return 'Replace the highlighted text with the complete corrected rubric shown below.';
+}
+
 function locateFinding(
   finding: Issue,
   rubric: RubricRecord,
@@ -768,31 +987,39 @@ function locateFinding(
   const originalLines = originalValue.split('\n');
   const correctedLines = correctedValue.split('\n');
   let lineNumber = finding.lineNumber;
+  const changedLine = originalLines.findIndex(
+    (line, index) => line !== (correctedLines[index] ?? line),
+  );
 
-  if (typeof lineNumber !== 'number' || lineNumber < 1 || lineNumber > originalLines.length) {
+  if (changedLine >= 0) {
+    lineNumber = changedLine + 1;
+  } else if (
+    typeof lineNumber !== 'number' ||
+    lineNumber < 1 ||
+    lineNumber > originalLines.length
+  ) {
     const excerpt = finding.excerpt?.trim().toLowerCase();
     const excerptLine = excerpt
       ? originalLines.findIndex((line) => line.toLowerCase().includes(excerpt))
       : -1;
-    const changedLine = originalLines.findIndex(
-      (line, index) => line !== (correctedLines[index] ?? line),
-    );
 
     lineNumber = excerptLine >= 0
       ? excerptLine + 1
-      : changedLine >= 0
-        ? changedLine + 1
-        : originalLines.length === 1
+      : originalLines.length === 1
           ? 1
           : null;
   }
 
   let excerpt = finding.excerpt?.trim() || '';
-  if (!excerpt && typeof lineNumber === 'number') {
+  if (typeof lineNumber === 'number') {
     const originalLine = originalLines[lineNumber - 1] || '';
     const correctedLine = correctedLines[lineNumber - 1] ?? originalLine;
     const range = changedTextRange(originalLine, correctedLine);
-    excerpt = range ? originalLine.slice(range[0], range[1]).trim() : originalLine.trim();
+    if (range) {
+      excerpt = originalLine.slice(range[0], range[1]).trim();
+    } else if (!excerpt) {
+      excerpt = originalLine.trim();
+    }
   }
 
   const correctedText = finding.correctedText?.trim() ||
@@ -822,6 +1049,7 @@ function HighlightedFieldValue({
     <div className={className}>
       {lines.map((line, lineIndex) => {
         const lineNumber = lineIndex + 1;
+        const hasEmbeddedLineNumber = /^\s*\d+[.)]\s+/.test(line);
         const lineFindings = fieldFindings.filter((finding) => {
           if (typeof finding.lineNumber === 'number') {
             return finding.lineNumber === lineNumber;
@@ -854,9 +1082,7 @@ function HighlightedFieldValue({
         const hasWarning = severityFindings.some((finding) => finding.severity === 'warning');
         const highlightRange = severityFindings.length === 0
           ? null
-          : excerptRange && exactExcerpt !== line.trim()
-            ? excerptRange
-            : diffRange || excerptRange;
+          : diffRange || excerptRange;
         const highlightClass = hasError
           ? 'rounded bg-rose-500/25 px-0.5 text-rose-100 ring-1 ring-inset ring-rose-400/35'
           : 'rounded bg-amber-500/25 px-0.5 text-amber-100 ring-1 ring-inset ring-amber-400/35';
@@ -873,7 +1099,7 @@ function HighlightedFieldValue({
                   : '')
             }
           >
-            {lines.length > 1 && (
+            {lines.length > 1 && !hasEmbeddedLineNumber && (
               <span className="mr-2 select-none font-mono text-[10px] text-zinc-600">
                 {lineNumber}
               </span>
@@ -898,10 +1124,50 @@ function isFeatureRequest(rubric: RubricRecord) {
   return rubric.tags.length === 1 && rubric.tags[0].toLowerCase() === 'feature request';
 }
 
-function isAllowedAiFinding(finding: Issue, rubric: RubricRecord) {
-  if (finding.kind === 'grammar') return finding.field !== 'documentation';
+function isObjectiveGrammarFinding(finding: Issue, rubric: RubricRecord) {
+  const description = `${finding.message} ${finding.suggestion}`.toLowerCase();
+  const fieldValue = rubricFieldValue(rubric, finding.field);
+  const hasAdjacentDuplicateWord = /\b([a-z]+)\s+\1\b/i.test(fieldValue);
+
+  if (
+    /\b(repetitive|repetition|repeats?|redundant|wordy|wordiness)\b/.test(description)
+  ) {
+    return hasAdjacentDuplicateWord;
+  }
+
+  if (
+    /\b(sentence case|capitalization|capitalisation|stylistic|style|tone|formal|informal|contraction|concise|shorten|simplify|streamline|awkward|parallel|parallelism|natural phrasing|more natural|clearer|clarity|consistency|unnecessarily|wording improvement)\b/.test(description)
+  ) {
+    return false;
+  }
+
+  if (
+    finding.field === 'page_or_workflow' &&
+    /\b(fragment|complete sentence|terminal punctuation|sentence punctuation)\b/.test(description)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function isAllowedAiFinding(
+  finding: Issue,
+  rubric: RubricRecord,
+  documentationStatus?: AiReview['documentationStatus'],
+) {
+  if (isFeatureRequest(rubric) && finding.field === 'reproduction_steps') {
+    return false;
+  }
+  if (finding.kind === 'grammar') {
+    return finding.field !== 'documentation' &&
+      isObjectiveGrammarFinding(finding, rubric);
+  }
   if (finding.kind === 'documentation') {
-    return isFeatureRequest(rubric) && DOCUMENTATION_AI_FIELDS.has(finding.field);
+    if (documentationStatus === 'application_mismatch') return true;
+    return documentationStatus === 'supported' &&
+      isFeatureRequest(rubric) &&
+      DOCUMENTATION_AI_FIELDS.has(finding.field);
   }
   return false;
 }
@@ -960,23 +1226,79 @@ export default function Home() {
   const [copied, setCopied] = useState(false);
   const [copiedRubricIndex, setCopiedRubricIndex] = useState<number | null>(null);
 
+  useEffect(() => {
+    if (aiStatus !== 'ready' || !aiResponse || results.length === 0) return;
+
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        document.getElementById('validation-results')?.scrollIntoView({
+          behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches
+            ? 'auto'
+            : 'smooth',
+          block: 'start',
+        });
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [aiStatus, aiResponse, results.length]);
+
   const reviewedResults = useMemo(
     () =>
       results.map((result) => {
         const responseReview = aiResponse?.rubricReviews.find((review) => review.index === result.index);
-        const normalizedReview = responseReview && !isFeatureRequest(result.rubric)
+        const deterministicMismatchFindings = result.issues.filter(
+          (finding) => finding.code === 'application_mismatch',
+        );
+        const normalizedReview = responseReview && deterministicMismatchFindings.length > 0
           ? {
               ...responseReview,
-              documentationStatus: 'not_applicable' as const,
-              documentationSummary: 'Documentation review is not applicable to bug rubrics. Grammar review only.',
+              documentationStatus: 'application_mismatch' as const,
+              documentationSummary: deterministicMismatchFindings[0].message,
             }
-          : responseReview;
+          : responseReview &&
+              !isFeatureRequest(result.rubric) &&
+              responseReview.documentationStatus !== 'application_mismatch'
+            ? {
+                ...responseReview,
+                documentationStatus: 'not_applicable' as const,
+                documentationSummary: 'Documentation review is not applicable to bug rubrics. Grammar review only.',
+              }
+            : responseReview;
         const aiFindings = (normalizedReview?.findings || [])
-          .filter((finding) => isAllowedAiFinding(finding, result.rubric))
+          .filter((finding) =>
+            isAllowedAiFinding(
+              finding,
+              result.rubric,
+              normalizedReview?.documentationStatus,
+            ),
+          )
+          .filter((finding) =>
+            finding.kind !== 'documentation' ||
+            deterministicMismatchFindings.length === 0,
+          )
           .map((finding) =>
-            normalizedReview?.documentationStatus === 'not_found' && finding.kind === 'documentation'
-              ? { ...finding, severity: 'error' as const }
+            normalizedReview?.documentationStatus === 'application_mismatch' &&
+            finding.kind === 'documentation'
+              ? {
+                  ...finding,
+                  code: 'application_mismatch' as const,
+                  severity: 'error' as const,
+                }
               : finding,
+          )
+          .filter((finding) =>
+            Boolean(
+              correctedTextForFinding(
+                finding,
+                result.rubric,
+                normalizedReview?.correctedRubric,
+              ),
+            ),
           );
         const reviewFindings = [...result.issues, ...aiFindings];
         const correctedRubric = applyFindingCorrections(
@@ -990,27 +1312,32 @@ export default function Home() {
         const findings = reviewFindings.map((finding) =>
           locateFinding(finding, result.rubric, correctedRubric),
         );
-        const hasDocumentationFinding = aiFindings.some(
+        const hasDocumentationFinding = reviewFindings.some(
           (finding) => finding.kind === 'documentation',
         );
-        const statusErrorCount = isFeatureRequest(result.rubric) &&
-          aiReview?.documentationStatus === 'not_found' &&
+        const statusErrorCount = aiReview?.documentationStatus === 'application_mismatch' &&
           !hasDocumentationFinding
           ? 1
           : 0;
-        const statusWarningCount = isFeatureRequest(result.rubric) &&
-          aiReview?.documentationStatus === 'unclear' &&
-          !hasDocumentationFinding
-          ? 1
-          : 0;
+        const grammarCount = findings.filter(
+          (finding) => finding.kind !== 'documentation' && finding.kind !== 'validation',
+        ).length;
+        const documentationCount =
+          findings.filter((finding) => finding.kind === 'documentation').length +
+          statusErrorCount;
+        const validationCount = findings.filter(
+          (finding) => finding.kind === 'validation',
+        ).length;
         return {
           ...result,
           aiReview,
           findings,
+          grammarCount,
+          documentationCount,
+          validationCount,
           errorCount:
             findings.filter((finding) => finding.severity === 'error').length + statusErrorCount,
-          warningCount:
-            findings.filter((finding) => finding.severity === 'warning').length + statusWarningCount,
+          warningCount: findings.filter((finding) => finding.severity === 'warning').length,
         };
       }),
     [aiResponse, results],
@@ -1036,7 +1363,7 @@ export default function Home() {
   const outcomePresentation =
     validationMetrics.outcome === 'failed'
       ? {
-          label: 'Failed to pass',
+          label: 'Needs revision',
           submission: 'Not ready to submit',
           description: `This batch contains ${validationMetrics.errors} error${validationMetrics.errors === 1 ? '' : 's'} that must be fixed before submission. Review the affected rubrics below.`,
           badgeClass: 'border-rose-500/25 bg-rose-500/12 text-rose-300',
@@ -1227,7 +1554,10 @@ export default function Home() {
       const validatedResults = rubrics.map((rubric, index) => ({
         index,
         rubric,
-        issues: validateRubric(rubric),
+        issues: [
+          ...validateRubric(rubric),
+          ...validateApplicationMatch(rubric, application),
+        ],
       }));
 
       setResults(validatedResults);
@@ -1302,7 +1632,7 @@ export default function Home() {
             type="button"
             aria-current="page"
             onClick={() => document.getElementById('rubrics-json')?.focus()}
-            className="rounded-lg bg-emerald-400 px-4 py-2 font-semibold text-[#06251a] transition hover:bg-emerald-300"
+            className="cursor-default rounded-lg bg-emerald-400 px-4 py-2 font-semibold text-[#06251a] hover:bg-emerald-400 active:bg-emerald-400"
           >
             Validate Rubrics
           </button>
@@ -1676,7 +2006,10 @@ export default function Home() {
         )}
 
         {aiStatus === 'ready' && aiResponse && application && liveBatchSummary && results.length > 0 && (
-          <section className="mt-10 border-t border-white/8 pt-8">
+          <section
+            id="validation-results"
+            className="mt-10 scroll-mt-6 border-t border-white/8 pt-8"
+          >
             <div className="rounded-2xl border border-white/10 bg-[#0d1013] p-5 sm:p-6">
               <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
                 <div className="min-w-0">
@@ -1741,7 +2074,7 @@ export default function Home() {
                 const hasErrors = result.errorCount > 0;
                 const hasWarnings = result.warningCount > 0;
                 const statusLabel = hasErrors
-                  ? 'Failed to pass'
+                  ? 'Needs revision'
                   : hasWarnings
                     ? 'Passed with warnings'
                     : 'Valid';
@@ -1795,6 +2128,19 @@ export default function Home() {
                             <span className="text-xs text-zinc-600">
                               {result.errorCount} errors · {result.warningCount} warnings
                             </span>
+                            {(hasErrors || hasWarnings) && (
+                              <>
+                                <Badge className="border border-sky-400/20 bg-sky-400/10 text-[10px] text-sky-200">
+                                  Grammar {result.grammarCount}
+                                </Badge>
+                                <Badge className="border border-indigo-400/20 bg-indigo-400/10 text-[10px] text-indigo-200">
+                                  Documentation {result.documentationCount}
+                                </Badge>
+                                <Badge className="border border-violet-400/20 bg-violet-400/10 text-[10px] text-violet-200">
+                                  Validation {result.validationCount}
+                                </Badge>
+                              </>
+                            )}
                           </div>
                           <p className="mt-2 line-clamp-2 text-sm font-medium leading-5 text-zinc-200">
                             {result.rubric.criterion || 'Missing criterion'}
@@ -1829,12 +2175,6 @@ export default function Home() {
                         />
                         <div className="mt-4 flex flex-wrap gap-x-8 gap-y-2 text-xs text-zinc-500">
                           <p>Declared tag: <strong className="text-zinc-300">{result.rubric.tags.join(', ') || 'missing'}</strong></p>
-                          <p>
-                            Review scope:{' '}
-                            <strong className="text-zinc-300">
-                              {isFeatureRequest(result.rubric) ? 'Grammar + feature capability' : 'Grammar only'}
-                            </strong>
-                          </p>
                         </div>
                       </div>
 
@@ -1886,7 +2226,7 @@ export default function Home() {
                           <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-600">Documentation review</p>
                           {result.aiReview && (
                             <Badge className={docsBadge(result.aiReview.documentationStatus)}>
-                              {result.aiReview.documentationStatus.replaceAll('_', ' ')}
+                              {docsStatusLabel(result.aiReview.documentationStatus)}
                             </Badge>
                           )}
                         </div>
@@ -1901,6 +2241,11 @@ export default function Home() {
                           <div className="mt-3 space-y-2">
                             {result.findings.map((finding, findingIndex) => {
                               const correctedText = correctedTextForFinding(
+                                finding,
+                                result.rubric,
+                                result.aiReview?.correctedRubric,
+                              );
+                              const recommendedChange = exactRecommendedChange(
                                 finding,
                                 result.rubric,
                                 result.aiReview?.correctedRubric,
@@ -1920,6 +2265,21 @@ export default function Home() {
                                   <Badge className={finding.severity === 'error' ? 'bg-rose-500/15 text-rose-200' : 'bg-amber-500/15 text-amber-200'}>
                                     {finding.severity}
                                   </Badge>
+                                  <Badge
+                                    className={
+                                      finding.kind === 'documentation'
+                                        ? 'border border-indigo-400/20 bg-indigo-400/10 text-indigo-200'
+                                        : finding.kind === 'validation'
+                                          ? 'border border-violet-400/20 bg-violet-400/10 text-violet-200'
+                                        : 'border border-sky-400/20 bg-sky-400/10 text-sky-200'
+                                    }
+                                  >
+                                    {finding.kind === 'documentation'
+                                      ? 'Documentation'
+                                      : finding.kind === 'validation'
+                                        ? 'Validation'
+                                        : 'Grammar'}
+                                  </Badge>
                                   <Badge className="bg-white/5 font-mono text-[10px] text-zinc-400">{finding.field}</Badge>
                                   {typeof finding.lineNumber === 'number' && (
                                     <Badge className="bg-white/5 font-mono text-[10px] text-zinc-400">
@@ -1931,7 +2291,7 @@ export default function Home() {
                                   </strong>
                                 </div>
                                 <p className="mt-2 text-xs leading-5 text-zinc-400">
-                                  <span className="font-medium text-zinc-300">Recommended change:</span> {finding.suggestion}
+                                  <span className="font-medium text-zinc-300">Recommended change:</span> {recommendedChange}
                                 </p>
                                 {correctedText && (
                                   <div className="mt-3 rounded-lg border border-emerald-500/15 bg-emerald-500/[0.05] px-3 py-2">
