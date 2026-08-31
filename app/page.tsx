@@ -110,10 +110,26 @@ type AiResponse = {
   sources: Array<{ title: string; url: string }>;
 };
 
+type CorrectionTarget = {
+  index: number;
+  field: string;
+  originalText: string;
+  messages: string[];
+  suggestions: string[];
+};
+
+type CorrectionPatch = {
+  index: number;
+  field: string;
+  correctedText: string;
+};
+
 type ValidationApiPayload = Partial<AiResponse> & {
   error?: string;
   responseId?: string;
+  responseType?: 'correction_repair';
   status?: 'queued' | 'in_progress';
+  corrections?: CorrectionPatch[];
 };
 
 const BATCHES: Record<
@@ -132,6 +148,7 @@ const DOCUMENTATION_AI_FIELDS = new Set([
   'actual_behavior',
 ]);
 const VALIDATION_POLL_INTERVAL_MS = 2000;
+const MAX_CORRECTION_REPAIR_ATTEMPTS = 3;
 const RUBRIC_KEYS = ['criterion', 'score', 'tags', 'forms'] as const;
 const FORM_KEYS = [
   'page_or_workflow',
@@ -578,17 +595,135 @@ function applyFindingCorrections(
   return nextRubric;
 }
 
+function setRubricFieldValue(
+  rubric: RubricRecord,
+  field: string,
+  value: string,
+) {
+  const nextRubric: RubricRecord = {
+    ...rubric,
+    tags: [...rubric.tags],
+    forms: { ...rubric.forms },
+  };
+
+  if (field === 'criterion') nextRubric.criterion = value;
+  if (field === 'tag') nextRubric.tags = [value];
+  if (field === 'page_or_workflow') nextRubric.forms.page_or_workflow = value;
+  if (field === 'reproduction_steps') nextRubric.forms.reproduction_steps = value;
+  if (field === 'expected_behavior') nextRubric.forms.expected_behavior = value;
+  if (field === 'actual_behavior') nextRubric.forms.actual_behavior = value;
+
+  return nextRubric;
+}
+
 function rubricHasChanges(original: RubricRecord, corrected: RubricRecord | undefined) {
   return Boolean(corrected) && JSON.stringify(original) !== JSON.stringify(corrected);
 }
 
-function reviewNeedsCorrectionRepair(review: AiReview, rubric: RubricRecord) {
-  return review.findings
-    .filter((finding) => isAllowedAiFinding(finding, rubric))
-    .some(
-      (finding) =>
-        !correctedTextForFinding(finding, rubric, review.correctedRubric),
-    );
+function collectCorrectionTargets(
+  rubrics: RubricRecord[],
+  reviews: AiReview[],
+) {
+  const targets = new Map<string, CorrectionTarget>();
+
+  rubrics.forEach((rubric, index) => {
+    const review = reviews.find((candidate) => candidate.index === index);
+    if (!review) return;
+
+    const findings = [
+      ...validateRubric(rubric),
+      ...review.findings.filter((finding) => isAllowedAiFinding(finding, rubric)),
+    ];
+
+    findings.forEach((finding) => {
+      const originalText = rubricFieldValue(rubric, finding.field).trim();
+      if (
+        !originalText ||
+        correctedTextForFinding(finding, rubric, review.correctedRubric)
+      ) {
+        return;
+      }
+
+      const key = `${index}:${finding.field}`;
+      const existing = targets.get(key);
+      if (existing) {
+        if (!existing.messages.includes(finding.message)) {
+          existing.messages.push(finding.message);
+        }
+        if (!existing.suggestions.includes(finding.suggestion)) {
+          existing.suggestions.push(finding.suggestion);
+        }
+        return;
+      }
+
+      targets.set(key, {
+        index,
+        field: finding.field,
+        originalText,
+        messages: [finding.message],
+        suggestions: [finding.suggestion],
+      });
+    });
+  });
+
+  return [...targets.values()];
+}
+
+function mergeCorrectionPatches(
+  payload: ValidationApiPayload,
+  targets: CorrectionTarget[],
+  corrections: CorrectionPatch[],
+) {
+  const requestedTargets = new Map(
+    targets.map((target) => [`${target.index}:${target.field}`, target]),
+  );
+  const acceptedCorrections = new Map<string, string>();
+
+  corrections.forEach((correction) => {
+    const key = `${correction.index}:${correction.field}`;
+    const target = requestedTargets.get(key);
+    const correctedText = correction.correctedText?.trim() || '';
+    if (
+      !target ||
+      !correctedText ||
+      correctedText === target.originalText.trim()
+    ) {
+      return;
+    }
+    acceptedCorrections.set(key, correctedText);
+  });
+
+  return {
+    ...payload,
+    rubricReviews: (payload.rubricReviews || []).map((review) => {
+      let correctedRubric = review.correctedRubric;
+      const findings = review.findings.map((finding) => {
+        const correction = acceptedCorrections.get(
+          `${review.index}:${finding.field}`,
+        );
+        if (!correction) return finding;
+        correctedRubric = setRubricFieldValue(
+          correctedRubric,
+          finding.field,
+          correction,
+        );
+        return { ...finding, correctedText: correction };
+      });
+
+      acceptedCorrections.forEach((correction, key) => {
+        const [indexText, field] = key.split(':');
+        if (Number(indexText) === review.index) {
+          correctedRubric = setRubricFieldValue(
+            correctedRubric,
+            field,
+            correction,
+          );
+        }
+      });
+
+      return { ...review, findings, correctedRubric };
+    }),
+  };
 }
 
 function changedTextRange(original: string, corrected: string): [number, number] | null {
@@ -793,6 +928,7 @@ function waitForNextValidationPoll() {
 async function waitForCompletedValidation(initialResponse: Response) {
   let response = initialResponse;
   let payload = await readValidationPayload(response);
+  const responseType = payload.responseType;
 
   while (response.status === 202) {
     if (!payload.responseId) {
@@ -800,10 +936,11 @@ async function waitForCompletedValidation(initialResponse: Response) {
     }
 
     await waitForNextValidationPoll();
-    response = await fetch(
-      `/api/validate?responseId=${encodeURIComponent(payload.responseId)}`,
-      { cache: 'no-store' },
-    );
+    const searchParams = new URLSearchParams({ responseId: payload.responseId });
+    if (responseType) searchParams.set('responseType', responseType);
+    response = await fetch(`/api/validate?${searchParams.toString()}`, {
+      cache: 'no-store',
+    });
     payload = await readValidationPayload(response);
   }
 
@@ -841,15 +978,16 @@ export default function Home() {
               ? { ...finding, severity: 'error' as const }
               : finding,
           );
+        const reviewFindings = [...result.issues, ...aiFindings];
         const correctedRubric = applyFindingCorrections(
           result.rubric,
           normalizedReview?.correctedRubric,
-          aiFindings,
+          reviewFindings,
         );
         const aiReview = normalizedReview
           ? { ...normalizedReview, correctedRubric }
           : undefined;
-        const findings = [...result.issues, ...aiFindings].map((finding) =>
+        const findings = reviewFindings.map((finding) =>
           locateFinding(finding, result.rubric, correctedRubric),
         );
         const hasDocumentationFinding = aiFindings.some(
@@ -1050,13 +1188,14 @@ export default function Home() {
         throw new Error('The AI review returned incomplete results. Validation was not completed.');
       }
 
-      const needsCorrectionRepair = rubrics.some((rubric, index) => {
-        const review = rubricReviews.find((candidate) => candidate.index === index);
-        return review ? reviewNeedsCorrectionRepair(review, rubric) : false;
-      });
+      let correctionTargets = collectCorrectionTargets(rubrics, rubricReviews);
+      let correctionRepairAttempt = 0;
 
-      if (needsCorrectionRepair) {
-        const originalSources = payload.sources || [];
+      while (
+        correctionTargets.length > 0 &&
+        correctionRepairAttempt < MAX_CORRECTION_REPAIR_ATTEMPTS
+      ) {
+        correctionRepairAttempt += 1;
         const repairInitialResponse = await fetch('/api/validate', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -1065,24 +1204,24 @@ export default function Home() {
             application,
             batch: batchKey,
             rubrics,
-            review: payload,
+            targets: correctionTargets,
           }),
         });
         const repairResult = await waitForCompletedValidation(repairInitialResponse);
-        const repairedReviews = repairResult.payload.rubricReviews;
-        const repairIsComplete =
-          repairResult.response.ok &&
-          Array.isArray(repairedReviews) &&
-          rubrics.every((_, index) =>
-            repairedReviews.some((review) => review.index === index),
-          );
+        if (!repairResult.response.ok) break;
 
-        if (repairIsComplete) {
-          payload = {
-            ...repairResult.payload,
-            sources: originalSources,
-          };
-        }
+        const corrections = repairResult.payload.corrections;
+        if (!Array.isArray(corrections)) break;
+
+        payload = mergeCorrectionPatches(
+          payload,
+          correctionTargets,
+          corrections,
+        );
+        correctionTargets = collectCorrectionTargets(
+          rubrics,
+          payload.rubricReviews || [],
+        );
       }
 
       const validatedResults = rubrics.map((rubric, index) => ({
