@@ -47,6 +47,7 @@ import { PRODUCT_NAME, PRODUCT_TITLE } from "@/lib/constants.mjs";
 import {
   SUPPORTED_APPLICATION_IDS,
   SUPPORTED_APPLICATIONS,
+  detectSupportedApplications,
   getSupportedApplication,
 } from "@/lib/applications.mjs";
 
@@ -681,22 +682,88 @@ function docsStatusLabel(status: AiReview["documentationStatus"]) {
 
 function messageWithReferenceLinks(message: string) {
   const references: Array<{ title: string; url: string }> = [];
+  const addReference = (title: string, url: string) => {
+    if (!references.some((reference) => reference.url === url)) {
+      references.push({ title, url });
+    }
+  };
   const text = message
     .replace(
       /\[([^\]]+)]\((https?:\/\/[^)\s]+)\)/g,
       (_match, title: string, url: string) => {
-        if (!references.some((reference) => reference.url === url)) {
-          references.push({ title, url });
-        }
+        addReference(title, url);
         return "";
       },
     )
+    .replace(/https?:\/\/[^\s<>"']+/g, (rawUrl) => {
+      const url = rawUrl.replace(/[),.;!?]+$/g, "");
+      let title = "Reference document";
+      try {
+        title = new URL(url).hostname;
+      } catch {
+        return rawUrl;
+      }
+      addReference(title, url);
+      return rawUrl.slice(url.length);
+    })
     .replace(/\(\s*\)/g, "")
     .replace(/\s+([,.;:!?])/g, "$1")
     .replace(/\s{2,}/g, " ")
     .trim();
 
   return { text, references };
+}
+
+function fallbackDocumentationReferences(
+  rubric: RubricRecord,
+  findingMessage: string,
+  selectedApplicationId: string,
+  documentationStatus: AiReview["documentationStatus"] | undefined,
+  response: AiResponse | null,
+) {
+  if (!response) return [];
+
+  const selectedApplication = getSupportedApplication(selectedApplicationId);
+  const detectedApplications = detectSupportedApplications([
+    findingMessage,
+    rubric,
+  ]);
+  const referencedApplication =
+    documentationStatus === "application_mismatch"
+      ? detectedApplications.find(
+          (candidate) => candidate.id !== selectedApplication?.id,
+        )
+      : detectedApplications.find(
+          (candidate) => candidate.id === selectedApplication?.id,
+        ) || detectedApplications[0];
+  const targetApplication = referencedApplication || selectedApplication;
+  if (!targetApplication) return [];
+
+  const reviewedApplication = response.applicationsReviewed.find(
+    (candidate) => candidate.id === targetApplication.id,
+  );
+  const attributedSources = response.sources.filter((source) => {
+    if (source.application === targetApplication.label) return true;
+    try {
+      const hostname = new URL(source.url).hostname.toLowerCase();
+      return (reviewedApplication?.officialDomains || []).some(
+        (domain) => hostname === domain || hostname.endsWith(`.${domain}`),
+      );
+    } catch {
+      return false;
+    }
+  });
+  const sources = [
+    ...(reviewedApplication?.documentationSources || []),
+    ...attributedSources,
+  ];
+  const source = sources.find(
+    (candidate, index) =>
+      candidate.url &&
+      sources.findIndex((item) => item.url === candidate.url) === index,
+  ) || (response.applicationsReviewed.length === 1 ? response.sources[0] : null);
+
+  return source ? [{ title: source.title, url: source.url }] : [];
 }
 
 function displayedDocumentationSources(
@@ -2615,6 +2682,18 @@ export default function Home() {
                                   );
                                 const displayedMessage =
                                   messageWithReferenceLinks(finding.message);
+                                const referenceLinks =
+                                  displayedMessage.references.length > 0
+                                    ? displayedMessage.references
+                                    : finding.kind === "documentation"
+                                      ? fallbackDocumentationReferences(
+                                          result.rubric,
+                                          finding.message,
+                                          application,
+                                          result.aiReview?.documentationStatus,
+                                          aiResponse,
+                                        )
+                                      : [];
 
                                 return (
                                   <div
@@ -2669,7 +2748,7 @@ export default function Home() {
                                       >
                                         {displayedMessage.text}
                                       </strong>
-                                      {displayedMessage.references.map(
+                                      {referenceLinks.map(
                                         (reference, referenceIndex) => (
                                           <a
                                             key={reference.url}
@@ -2680,8 +2759,7 @@ export default function Home() {
                                             className="inline-flex items-center gap-1 rounded-md border border-indigo-400/25 bg-indigo-400/10 px-2 py-1 text-[10px] font-medium text-indigo-200 transition-colors hover:border-indigo-300/40 hover:bg-indigo-400/15 hover:text-indigo-100"
                                           >
                                             <ExternalLink className="size-3" />
-                                            {displayedMessage.references
-                                              .length > 1
+                                            {referenceLinks.length > 1
                                               ? `Open reference doc ${referenceIndex + 1}`
                                               : "Open reference doc"}
                                           </a>
