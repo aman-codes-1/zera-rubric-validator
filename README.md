@@ -1,4 +1,4 @@
-# Zera for Feather
+# Zera Rubric Validator
 
 AI-powered quality assurance for bug and feature-request rubrics, with documentation-grounded capability checks for feature requests.
 
@@ -53,7 +53,7 @@ Zera gives rubric authors one review surface that catches mechanical mistakes im
 
 ## Use of Codex
 
-Codex was used as the development partner for Zera for Feather. It helped turn product feedback and screenshots into implementation changes across the interface, validation flow, worker, and documentation.
+Codex was used as the development partner for Zera Rubric Validator. It helped turn product feedback and screenshots into implementation changes across the interface, validation flow, worker, and documentation.
 
 Codex contributed to the project by:
 
@@ -90,7 +90,7 @@ The following progression reflects the changes this project actually made. Evide
 | Iteration 15 - completion navigation | Restored automatic navigation from the input/loading area to the completed validation summary. | Long documentation reviews could finish while the user remained positioned near the input and source panels, leaving the results below the fold. Zera now waits for the result DOM to render and scrolls the summary into view, using an instant transition when reduced motion is enabled. | Completion should move the user directly to the outcome without requiring them to search down the page. |
 | Iteration 16 - structural finding classification | Separated deterministic validation failures from language findings and simplified rubric metadata. | An interrupted or misnumbered bug-step list was labeled Grammar and could receive an unrelated language rewrite. It now receives a Validation badge, the corrected rubric is renumbered deterministically from `1`, and the redundant Review scope line has been removed. | Ordered-list, score, tag, and schema rules are validation concerns; Grammar should be reserved for actual language errors. |
 | Iteration 17 - shared application scope and traceable sources | Replaced separate client and worker application checks with one shared registry, then required source URLs in the structured review. | With Workday selected and QuickBooks named anywhere in the complete rubric JSON, the validated scope becomes Workday as `selected` plus QuickBooks as `detected_in_rubrics`. The agent researches both independently, returns the exact official pages used for each, and the Application knowledge card shows application-labeled titles and complete clickable URLs. Unsupported names do not enter the scope. | Application identity must be decided by code from one allowlist, while documentation discovery remains dynamic. Every reviewed product should have traceable source links instead of only a prose summary. |
-| Final - Zera for Feather | Combined strict JSON and batch gating, documentation-grounded review, fail-closed API behavior, detailed per-rubric reports, corrected JSON, and clearer loading and navigation states. | The final flow blocks nonsense and incomplete batches before review, refuses to validate when AI evidence is unavailable, and classifies completed batches as **Pass**, **Passed with warnings**, or **Needs revision** with traceable findings. | The main contribution is a fail-closed evaluator: deterministic rules establish eligibility, while the agent handles only the semantic checks that require product knowledge. |
+| Final - Zera Rubric Validator | Combined strict JSON and batch gating, documentation-grounded review, fail-closed API behavior, detailed per-rubric reports, corrected JSON, and clearer loading and navigation states. | The final flow blocks nonsense and incomplete batches before review, refuses to validate when AI evidence is unavailable, and classifies completed batches as **Pass**, **Passed with warnings**, or **Needs revision** with traceable findings. | The main contribution is a fail-closed evaluator: deterministic rules establish eligibility, while the agent handles only the semantic checks that require product knowledge. |
 
 ### Regression evidence
 
@@ -238,7 +238,7 @@ Keep `OPENAI_API_KEY` private. It is used only by the server-side validation wor
 npm run dev
 ```
 
-Open [Zera for Feather](https://zera-rubric-validator.vercel.app/).
+Open [Zera Rubric Validator](https://zera-rubric-validator.vercel.app/).
 
 ## Available scripts
 
