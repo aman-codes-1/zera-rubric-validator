@@ -7,8 +7,9 @@
   },
   "scripts": {
     "dev": "node scripts/dev-server.mjs",
-    "build": "next build --webpack",
-    "start": "next start",
+    "build": "next build",
+    "postbuild": "node scripts/prepare-sites-output.mjs",
+    "start": "wrangler dev --config dist/server/wrangler.json",
     "lint": "oxlint",
     "format": "oxfmt"
   },
