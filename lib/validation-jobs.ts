@@ -9,7 +9,7 @@ import {
 } from './rubric-validation.ts';
 
 export const JOB_RETENTION_SECONDS = 24 * 60 * 60;
-const JOB_TIMEOUT_MS = 30 * 60_000;
+export const JOB_TIMEOUT_MS = 30 * 60_000;
 const LEASE_MS = 25_000;
 const POLL_INTERVAL_MS = 2_000;
 const MAX_POLL_FAILURES = 4;
@@ -73,19 +73,30 @@ export type JobStore = {
   ): Promise<string | null>;
 };
 
+export type JobQueueStore = JobStore & {
+  due(before: number, limit: number): Promise<string[]>;
+  prepare?(): Promise<void>;
+  pruneMissing?(owner: string): Promise<void>;
+};
+
 export type PublicJob =
   | TerminalJob
-  | (JobIdentity & {
-      status: ActiveJob['status'];
-      phase: Phase;
-      pollAfterMs: number;
-    });
+  | (JobIdentity & { status: ActiveJob['status']; phase: Phase });
 
 const REPAIR_WARNING =
   'Some suggested corrections could not be generated. Review the remaining findings before submitting.';
 
 function active(job: StoredJob): job is ActiveJob {
   return job.status === 'queued' || job.status === 'running';
+}
+
+export function scheduledAt(job: StoredJob): number | null {
+  if (!active(job)) return null;
+  return Math.max(
+    job.createdAt,
+    job.leaseUntil,
+    Math.min(job.nextPollAt, job.createdAt + JOB_TIMEOUT_MS),
+  );
 }
 
 function identity(job: StoredJob): JobIdentity {
@@ -171,11 +182,6 @@ export function createValidationJobs(
       ...identity(job),
       status: job.status,
       phase: job.phase,
-      pollAfterMs: Math.max(
-        0,
-        job.nextPollAt - now(),
-        Math.min(job.leaseUntil - now(), POLL_INTERVAL_MS),
-      ),
     };
   }
 
@@ -247,10 +253,12 @@ export function createValidationJobs(
     throw new Error('Could not cancel the validation job.');
   }
 
-  async function advance(owner: string, id: string) {
+  async function advance(owner: string, expectedJobId?: string) {
     const current = await store.read(owner);
-    if (!current || current.job.id !== id) return null;
+    if (!current || (expectedJobId && current.job.id !== expectedJobId))
+      return null;
     const job = current.job;
+    const id = job.id;
     if (!active(job)) return project(job);
 
     const time = now();
@@ -329,7 +337,6 @@ export function createValidationJobs(
 
     if (now() - job.createdAt >= JOB_TIMEOUT_MS) {
       cancelResponseId = startedResponseId ?? job.responseId;
-      startedResponseId = null;
       next = failure(
         job,
         'The AI review timed out. Validation was not completed.',
@@ -352,7 +359,6 @@ export function createValidationJobs(
       active(winner.job) &&
       winner.job.responseId === startedResponseId;
     if (!adoptedResponse) await cancelUpstream(startedResponseId);
-    await cancelUpstream(cancelResponseId);
     return project(winner?.job.id === id ? winner.job : null);
   }
 

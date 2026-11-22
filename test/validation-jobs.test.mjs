@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as defer } from 'node:timers/promises';
@@ -10,57 +11,16 @@ import { createValidationJobHandler } from '../lib/validation-job-api.ts';
 import { createValidationJobClient } from '../lib/validation-job-client.ts';
 import { createRedisJobStore } from '../lib/validation-job-redis.ts';
 import { createSqliteJobStore } from '../lib/validation-job-sqlite.ts';
+import {
+  createValidationJobs,
+  JOB_RETENTION_SECONDS,
+} from '../lib/validation-jobs.ts';
+import { createValidationRunner } from '../worker/validation-runner.ts';
 import { createOpenAIReviewProvider } from '../worker/feather-worker.js';
+import { batch, completeReview } from './fixtures/validation-input.mjs';
 
 const URL_ROOT = 'https://validator.test';
 const INITIAL_TIME = Date.UTC(2026, 0, 1);
-
-function batch() {
-  return {
-    application: 'quickbooks',
-    batch: 'Batch C',
-    rubrics: Array.from({ length: 10 }, (_, index) => ({
-      criterion: 'Invoice: Verify the invoice total.',
-      score: 10,
-      tags: [index < 3 ? 'bug' : 'feature request'],
-      forms: {
-        page_or_workflow: 'Invoice details',
-        reproduction_steps: index < 3 ? '1. Open the invoice.' : 'N/A',
-        expected_behavior: 'The invoice displays the updated total.',
-        actual_behavior: 'The invoice displays the original total.',
-      },
-    })),
-  };
-}
-
-function completeReview(input, findings = []) {
-  const docs = {
-    title: 'Invoice guidance',
-    url: 'https://quickbooks.intuit.com/learn-support/invoices',
-  };
-  return {
-    applicationBrief: 'QuickBooks invoice documentation.',
-    applicationsReviewed: [
-      {
-        id: 'quickbooks',
-        name: 'QuickBooks',
-        role: 'selected',
-        officialDomains: ['quickbooks.intuit.com'],
-        documentationSources: [docs],
-      },
-    ],
-    sources: [docs],
-    rubricReviews: input.rubrics.map((rubric, index) => ({
-      index,
-      criterionSection: 'Invoice',
-      documentationStatus: index < 3 ? 'not_applicable' : 'supported',
-      documentationSummary:
-        index < 3 ? 'Grammar only.' : 'An invoice displays a total.',
-      findings: index === 3 ? findings : [],
-      correctedRubric: rubric,
-    })),
-  };
-}
 
 function backgroundResponse(id, status, result) {
   return Response.json({
@@ -95,6 +55,7 @@ function database(t) {
   let time = INITIAL_TIME;
   const now = () => time;
   return {
+    filename,
     now,
     move(ms) {
       time += ms;
@@ -111,12 +72,19 @@ function database(t) {
   };
 }
 
-function browser(handler) {
-  let handle = handler;
+function validationService(store, provider, now) {
+  return {
+    handle: createValidationJobHandler(store, provider, now),
+    jobs: createValidationJobs(store, provider, now),
+  };
+}
+
+function browser(service) {
+  let current = service;
   let cookie = '';
   return {
     replace(next) {
-      handle = next;
+      current = next;
     },
     get owner() {
       return cookie.split('=')[1];
@@ -124,12 +92,15 @@ function browser(handler) {
     async fetch(path, init = {}) {
       const headers = new Headers(init.headers);
       if (cookie) headers.set('cookie', cookie);
-      const response = await handle(
+      const response = await current.handle(
         new Request(new URL(path, URL_ROOT), { ...init, headers }),
       );
       const setCookie = response.headers.get('set-cookie');
       if (setCookie) cookie = setCookie.split(';')[0];
       return response;
+    },
+    async advance(id) {
+      return { job: await current.jobs.advance(this.owner, id) };
     },
     async send(method = 'GET', { id, body, headers } = {}) {
       const response = await this.fetch(
@@ -220,7 +191,7 @@ void test('persists review and repair stages across restarts and keeps validatio
     },
   );
 
-  const tab = browser(createValidationJobHandler(store, provider, db.now));
+  const tab = browser(validationService(store, provider, db.now));
   const boot = await tab.send();
   assert.equal(boot.job, null);
   assert.match(
@@ -233,36 +204,36 @@ void test('persists review and repair stages across restarts and keeps validatio
   assert.equal(status, 202);
   assert.equal(job.status, 'queued');
   assert.equal(calls.length, 0);
-  const started = await tab.send('PATCH', { id });
+  const started = await tab.advance(id);
   assert.equal(started.job.status, 'running');
   assert.equal(started.job.phase, 'review');
   assert.equal(Object.hasOwn(started.job, 'responseId'), false);
 
   db.close(store);
   store = db.open();
-  tab.replace(createValidationJobHandler(store, provider, db.now));
+  tab.replace(validationService(store, provider, db.now));
   const recovered = await tab.send();
   assert.equal(recovered.headers.get('cache-control'), 'private, no-store');
   assert.deepEqual(recovered.job.input, input);
   assert.equal(recovered.job.id, id);
 
-  const stranger = browser(createValidationJobHandler(store, provider, db.now));
+  const stranger = browser(validationService(store, provider, db.now));
   assert.equal((await stranger.send()).job, null);
-  assert.equal((await stranger.send('PATCH', { id })).status, 404);
+  assert.equal((await stranger.send('PATCH', { id })).status, 405);
   assert.equal((await stranger.send('DELETE', { id })).status, 404);
 
   db.move(2_000);
-  const repairQueued = await tab.send('PATCH', { id });
+  const repairQueued = await tab.advance(id);
   assert.equal(repairQueued.job.phase, 'repair');
   assert.equal(Object.hasOwn(repairQueued.job, 'result'), false);
-  await tab.send('PATCH', { id });
+  await tab.advance(id);
   db.close(store);
   store = db.open();
-  tab.replace(createValidationJobHandler(store, provider, db.now));
+  tab.replace(validationService(store, provider, db.now));
   assert.equal((await tab.send()).job.phase, 'repair');
 
   db.move(2_000);
-  const completed = (await tab.send('PATCH', { id })).job;
+  const completed = (await tab.advance(id)).job;
   assert.equal(completed.status, 'completed');
   assert.equal(completed.warning, undefined);
   assert.deepEqual(
@@ -311,7 +282,7 @@ void test('concurrent submissions and retries converge on a single job and dispa
       return providerResult.promise;
     },
   });
-  const tab = browser(createValidationJobHandler(first, provider, db.now));
+  const tab = browser(validationService(first, provider, db.now));
   await tab.send();
   const same = batch();
   const different = batch();
@@ -319,11 +290,7 @@ void test('concurrent submissions and retries converge on a single job and dispa
   const responses = await Promise.all(
     Array.from({ length: 16 }, (_, index) => {
       tab.replace(
-        createValidationJobHandler(
-          index % 2 === 0 ? first : other,
-          provider,
-          db.now,
-        ),
+        validationService(index % 2 === 0 ? first : other, provider, db.now),
       );
       return tab.submit(same);
     }),
@@ -337,10 +304,10 @@ void test('concurrent submissions and retries converge on a single job and dispa
   assert.equal((await tab.submit(different, id)).status, 409);
   assert.equal(starts, 0);
 
-  const worker = tab.send('PATCH', { id });
+  const worker = tab.advance(id);
   await providerStarted.promise;
   const polls = await Promise.all(
-    Array.from({ length: 8 }, () => tab.send('PATCH', { id })),
+    Array.from({ length: 8 }, () => tab.advance(id)),
   );
   assert.ok(polls.every((reply) => reply.job.status === 'running'));
   assert.equal(starts, 1);
@@ -369,20 +336,17 @@ void test('cancels queued jobs and a provider response that arrives after cancel
       cancelled.push(id);
     },
   });
-  const tab = browser(createValidationJobHandler(db.open(), provider, db.now));
+  const tab = browser(validationService(db.open(), provider, db.now));
   await tab.send();
   const queued = (await tab.submit()).job.id;
   assert.equal(
     (await tab.send('DELETE', { id: queued })).job.status,
     'cancelled',
   );
-  assert.equal(
-    (await tab.send('PATCH', { id: queued })).job.status,
-    'cancelled',
-  );
+  assert.equal((await tab.advance(queued)).job.status, 'cancelled');
 
   const id = (await tab.submit(batch(), crypto.randomUUID(), queued)).job.id;
-  const advancing = tab.send('PATCH', { id });
+  const advancing = tab.advance(id);
   await start.promise;
   assert.equal((await tab.send('DELETE', { id })).job.status, 'cancelled');
   assert.equal((await tab.send('DELETE', { id })).job.status, 'cancelled');
@@ -408,12 +372,12 @@ void test('an in-flight completion cannot replace cancellation even when the pro
       throw new Error('provider unreachable');
     },
   });
-  const tab = browser(createValidationJobHandler(db.open(), provider, db.now));
+  const tab = browser(validationService(db.open(), provider, db.now));
   await tab.send();
   const { id, input } = (await tab.submit()).job;
-  await tab.send('PATCH', { id });
+  await tab.advance(id);
   db.move(2_000);
-  const advancing = tab.send('PATCH', { id });
+  const advancing = tab.advance(id);
   await pollStarted.promise;
 
   const cancelled = await tab.send('DELETE', { id });
@@ -437,22 +401,25 @@ void test('bounds retrieval retries across process recovery and fails closed on 
       throw transient;
     },
   });
-  const tab = browser(createValidationJobHandler(store, provider, db.now));
+  const tab = browser(validationService(store, provider, db.now));
   await tab.send();
   const { id } = (await tab.submit()).job;
-  await tab.send('PATCH', { id });
+  await tab.advance(id);
   db.move(2_000);
   for (const interval of [4_000, 8_000, 16_000]) {
-    const response = await tab.send('PATCH', { id });
+    const response = await tab.advance(id);
     assert.equal(response.job.status, 'running');
-    assert.equal(response.job.pollAfterMs, interval);
+    assert.deepEqual(await store.due(db.now(), 1), []);
     const calls = errors.length;
-    tab.replace(createValidationJobHandler(store, provider, db.now));
-    await tab.send('PATCH', { id });
+    tab.replace(validationService(store, provider, db.now));
+    await tab.advance(id);
     assert.equal(errors.length, calls);
-    db.move(interval);
+    db.move(interval - 1);
+    assert.deepEqual(await store.due(db.now(), 1), []);
+    db.move(1);
+    assert.deepEqual(await store.due(db.now(), 1), [tab.owner]);
   }
-  const failed = (await tab.send('PATCH', { id })).job;
+  const failed = (await tab.advance(id)).job;
   assert.equal(errors.length, 4);
   assert.equal(failed.status, 'failed');
   assert.doesNotMatch(failed.error, /provider details/);
@@ -465,9 +432,9 @@ void test('bounds retrieval retries across process recovery and fails closed on 
       return { result: review };
     },
   });
-  tab.replace(createValidationJobHandler(store, corrupt, db.now));
+  tab.replace(validationService(store, corrupt, db.now));
   const newJob = (await tab.submit(batch(), crypto.randomUUID(), id)).job;
-  const incomplete = (await tab.send('PATCH', { id: newJob.id })).job;
+  const incomplete = (await tab.advance(newJob.id)).job;
   assert.equal(incomplete.status, 'failed');
   assert.match(incomplete.error, /incomplete/);
   assert.equal(Object.hasOwn(incomplete, 'result'), false);
@@ -483,7 +450,7 @@ void test('recovers a stranded polling lease but never repeats an unconfirmed pr
       return { responseId: 'resp_review' };
     },
   });
-  const tab = browser(createValidationJobHandler(store, provider, db.now));
+  const tab = browser(validationService(store, provider, db.now));
   await tab.send();
   const { id } = (await tab.submit()).job;
   const queued = await store.read(tab.owner);
@@ -493,25 +460,22 @@ void test('recovers a stranded polling lease but never repeats an unconfirmed pr
     leaseUntil: db.now() + 25_000,
   });
 
-  assert.equal((await tab.send('PATCH', { id })).job.status, 'running');
+  assert.equal((await tab.advance(id)).job.status, 'running');
   db.move(25_000);
-  const abandoned = (await tab.send('PATCH', { id })).job;
+  const abandoned = (await tab.advance(id)).job;
   assert.equal(abandoned.status, 'failed');
   assert.match(abandoned.error, /started reliably/);
   assert.equal(starts, 0);
 
   const recovered = (await tab.submit(batch(), crypto.randomUUID(), id)).job;
-  await tab.send('PATCH', { id: recovered.id });
+  await tab.advance(recovered.id);
   const polling = await store.read(tab.owner);
   await store.write(tab.owner, polling.version, {
     ...polling.job,
     leaseUntil: db.now() + 25_000,
   });
   db.move(25_000);
-  assert.equal(
-    (await tab.send('PATCH', { id: recovered.id })).job.status,
-    'completed',
-  );
+  assert.equal((await tab.advance(recovered.id)).job.status, 'completed');
   assert.equal(starts, 1);
 });
 
@@ -519,7 +483,7 @@ void test('times out an abandoned job and best-effort cancels its provider respo
   const db = database(t);
   const cancelled = [];
   const tab = browser(
-    createValidationJobHandler(
+    validationService(
       db.open(),
       fakeProvider({
         async cancel(id) {
@@ -531,10 +495,10 @@ void test('times out an abandoned job and best-effort cancels its provider respo
   );
   await tab.send();
   const { id } = (await tab.submit()).job;
-  await tab.send('PATCH', { id });
+  await tab.advance(id);
   db.move(30 * 60_000);
 
-  const job = (await tab.send('PATCH', { id })).job;
+  const job = (await tab.advance(id)).job;
   assert.equal(job.status, 'failed');
   assert.match(job.error, /timed out/);
   assert.deepEqual(cancelled, ['resp_review']);
@@ -560,15 +524,15 @@ void test('keeps a valid review when correction repair fails and bounds unresolv
       return { result: { corrections: [] } };
     },
   });
-  const tab = browser(createValidationJobHandler(store, provider, db.now));
+  const tab = browser(validationService(store, provider, db.now));
   await tab.send();
   const input = batch();
   input.rubrics[0].criterion = 'Missing a section prefix.';
   const { id } = (await tab.submit(input)).job;
-  assert.equal((await tab.send('PATCH', { id })).job.phase, 'repair');
-  assert.equal((await tab.send('PATCH', { id })).job.status, 'running');
-  assert.equal((await tab.send('PATCH', { id })).job.status, 'running');
-  const completed = (await tab.send('PATCH', { id })).job;
+  assert.equal((await tab.advance(id)).job.phase, 'repair');
+  assert.equal((await tab.advance(id)).job.status, 'running');
+  assert.equal((await tab.advance(id)).job.status, 'running');
+  const completed = (await tab.advance(id)).job;
   assert.equal(completed.status, 'completed');
   assert.match(completed.warning, /corrections/);
   assert.equal(attempts, 3);
@@ -579,8 +543,8 @@ void test('keeps a valid review when correction repair fails and bounds unresolv
 
   throwRepair = true;
   const next = (await tab.submit(input, crypto.randomUUID(), id)).job;
-  assert.equal((await tab.send('PATCH', { id: next.id })).job.phase, 'repair');
-  const failedRepair = (await tab.send('PATCH', { id: next.id })).job;
+  assert.equal((await tab.advance(next.id)).job.phase, 'repair');
+  const failedRepair = (await tab.advance(next.id)).job;
   assert.equal(failedRepair.status, 'completed');
   assert.match(failedRepair.warning, /corrections/);
 });
@@ -589,11 +553,7 @@ void test('validates requests and does not invoke OpenAI when storage or configu
   const db = database(t);
   const store = db.open();
   const missingKey = browser(
-    createValidationJobHandler(
-      store,
-      fakeProvider({ configured: false }),
-      db.now,
-    ),
+    validationService(store, fakeProvider({ configured: false }), db.now),
   );
   await missingKey.send();
   assert.equal((await missingKey.submit()).status, 503);
@@ -618,7 +578,7 @@ void test('validates requests and does not invoke OpenAI when storage or configu
     },
   };
   const tab = browser(
-    createValidationJobHandler(
+    validationService(
       flakyStore,
       fakeProvider({
         async start() {
@@ -649,22 +609,22 @@ void test('validates requests and does not invoke OpenAI when storage or configu
       .status,
     403,
   );
-  assert.equal((await tab.send('PATCH', { id: 'resp_review' })).status, 400);
+  assert.equal((await tab.send('DELETE', { id: 'resp_review' })).status, 400);
   assert.equal((await tab.submit()).status, 503);
   assert.equal(starts, 0);
 
   writeOutcome = 'ok';
   const { id } = (await tab.submit()).job;
   writeOutcome = 'lose-ack';
-  assert.equal((await tab.send('PATCH', { id })).job.status, 'running');
+  assert.equal((await tab.advance(id)).job.status, 'running');
   assert.equal((await store.read(tab.owner)).job.responseId, 'resp_review');
   db.move(2_000);
-  assert.equal((await tab.send('PATCH', { id })).job.status, 'completed');
+  assert.equal((await tab.advance(id)).job.status, 'completed');
   assert.equal(starts, 1);
   assert.deepEqual(cancelled, []);
 
   const active = (await tab.submit(batch(), crypto.randomUUID(), id)).job;
-  await tab.send('PATCH', { id: active.id });
+  await tab.advance(active.id);
   writeOutcome = 'lose-cancel-ack';
   assert.equal(
     (await tab.send('DELETE', { id: active.id })).job.status,
@@ -708,7 +668,7 @@ void test('browser reload replays a persisted submission after a lost response a
   const store = db.open();
   let starts = 0;
   const tab = browser(
-    createValidationJobHandler(
+    validationService(
       store,
       fakeProvider({
         async start(input) {
@@ -753,9 +713,12 @@ void test('browser reload replays a persisted submission after a lost response a
     },
     storage,
     (url, init) => tab.fetch(url, init),
+    () => defer(5),
   );
   t.after(() => second.disconnect());
   second.connect();
+  await until(() => !state.command && state.job?.status === 'queued');
+  await tab.advance(committedId);
   await until(() => state.job?.status === 'completed');
   assert.equal(state.job.id, committedId);
   assert.deepEqual(state.job.input, batch());
@@ -786,6 +749,7 @@ void test('Redis REST adapter sends atomic conditional writes and surfaces stora
   const results = [
     { result: 1 },
     { result: ['version', '{"id":"example"}'] },
+    { result: ['owner'] },
     { result: 0 },
     { error: 'unexpected' },
   ];
@@ -799,24 +763,38 @@ void test('Redis REST adapter sends atomic conditional writes and surfaces stora
     },
   );
 
-  const version = await store.write('owner', null, { id: 'example' });
+  const queued = {
+    id: 'example',
+    status: 'queued',
+    createdAt: INITIAL_TIME,
+    leaseUntil: 0,
+    nextPollAt: 0,
+  };
+  const version = await store.write('owner', null, queued);
   assert.equal(typeof version, 'string');
   assert.deepEqual(await store.read('owner'), {
     version: 'version',
     job: { id: 'example' },
   });
-  assert.equal(await store.write('owner', 'stale', { id: 'other' }), null);
+  assert.deepEqual(await store.due(INITIAL_TIME, 5), ['owner']);
+  assert.equal(
+    await store.write('owner', 'stale', { id: 'other', status: 'cancelled' }),
+    null,
+  );
   await assert.rejects(store.read('owner'), /invalid response/);
   const [evalCommand, script, ...params] = calls[0].command;
   assert.equal(evalCommand, 'EVAL');
-  assert.match(script, /HGET[\s\S]*HSET[\s\S]*EXPIRE/);
+  assert.match(script, /HGET[\s\S]*HSET[\s\S]*EXPIRE[\s\S]*ZREM[\s\S]*ZADD/);
   assert.deepEqual(params, [
-    1,
+    2,
     'job-tests:owner',
+    'job-tests:due',
     '',
     version,
-    '{"id":"example"}',
+    JSON.stringify(queued),
     86_400,
+    'owner',
+    INITIAL_TIME,
   ]);
   assert.deepEqual(calls[1].command, [
     'HMGET',
@@ -824,4 +802,205 @@ void test('Redis REST adapter sends atomic conditional writes and surfaces stora
     'version',
     'job',
   ]);
+  assert.deepEqual(calls[2].command, [
+    'ZRANGEBYSCORE',
+    'job-tests:due',
+    '-inf',
+    INITIAL_TIME,
+    'LIMIT',
+    0,
+    5,
+  ]);
+  assert.equal(calls[3].command.at(-1), '');
+});
+
+void test('the worker schedules jobs from SQLite created before the background queue existed', async (t) => {
+  const db = database(t);
+  const legacy = new DatabaseSync(db.filename);
+  legacy.exec(`
+    CREATE TABLE validation_jobs (
+      owner TEXT PRIMARY KEY,
+      version TEXT NOT NULL,
+      job TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+  `);
+  const owner = crypto.randomUUID();
+  const stored = {
+    id: crypto.randomUUID(),
+    input: batch(),
+    createdAt: db.now(),
+    status: 'running',
+    phase: 'review',
+    review: null,
+    targets: [],
+    repairAttempts: 0,
+    responseId: 'resp_preexisting',
+    leaseUntil: 0,
+    nextPollAt: db.now() + 2_000,
+    pollFailures: 0,
+  };
+  legacy
+    .prepare('INSERT INTO validation_jobs VALUES (?, ?, ?, ?)')
+    .run(
+      owner,
+      'existing-version',
+      JSON.stringify(stored),
+      db.now() + JOB_RETENTION_SECONDS * 1_000,
+    );
+  legacy.close();
+
+  const store = db.open();
+  let polls = 0;
+  const runner = createValidationRunner(
+    store,
+    fakeProvider({
+      async start() {
+        assert.fail('A stored response must be retrieved.');
+      },
+      async poll(input, phase, id) {
+        assert.equal(phase, 'review');
+        assert.equal(id, 'resp_preexisting');
+        polls++;
+        return { result: completeReview(input) };
+      },
+    }),
+    db.now,
+  );
+  assert.equal((await store.read(owner)).version, 'existing-version');
+  assert.equal(await runner(), 0);
+  db.move(2_000);
+  assert.equal(await runner(), 1);
+  assert.equal(polls, 1);
+  assert.equal((await store.read(owner)).job.status, 'completed');
+  assert.equal(await runner(), 0);
+});
+
+void test('a late worker cannot overwrite the result committed by the worker that reclaimed its lease', async (t) => {
+  const db = database(t);
+  const primary = db.open();
+  const secondary = db.open();
+  const oldPollEntered = Promise.withResolvers();
+  const delayedResult = Promise.withResolvers();
+  let polls = 0;
+  const provider = fakeProvider({
+    async poll(input) {
+      polls++;
+      if (polls === 1) {
+        oldPollEntered.resolve();
+        return delayedResult.promise;
+      }
+      return { result: completeReview(input) };
+    },
+  });
+
+  const tab = browser(validationService(primary, provider, db.now));
+  await tab.send();
+  const { job } = await tab.submit();
+  const older = createValidationRunner(primary, provider, db.now);
+  const newer = createValidationRunner(secondary, provider, db.now);
+  assert.equal(await older(), 1);
+  db.move(2_000);
+  const lateWorker = older();
+  await oldPollEntered.promise;
+  assert.equal(await newer(), 0);
+
+  db.move(25_000);
+  assert.equal(await newer(), 1);
+  const published = await secondary.read(tab.owner);
+  assert.equal(published.job.status, 'completed');
+  const staleReview = {
+    ...completeReview(job.input),
+    applicationBrief: 'Late duplicate for an old lease.',
+  };
+  delayedResult.resolve({ result: staleReview });
+  assert.equal(await lateWorker, 1);
+  assert.deepEqual(await primary.read(tab.owner), published);
+  assert.equal(await older(), 0);
+  assert.equal(polls, 2);
+});
+
+void test('retries an out-of-order provider reply and keeps the expected response ID', async (t) => {
+  const db = database(t);
+  const store = db.open();
+  let polls = 0;
+  const input = batch();
+  const provider = createOpenAIReviewProvider(
+    { OPENAI_API_KEY: 'test-key' },
+    async (_url, init) => {
+      if (init.method === 'POST')
+        return backgroundResponse('resp_new', 'queued');
+      if (++polls === 1) {
+        return backgroundResponse('resp_old', 'completed', {
+          ...completeReview(input),
+          applicationBrief: 'Stale',
+        });
+      }
+      return backgroundResponse('resp_new', 'completed', completeReview(input));
+    },
+  );
+  const tab = browser(validationService(store, provider, db.now));
+  await tab.send();
+  await tab.submit(input);
+  const runner = createValidationRunner(store, provider, db.now);
+  await runner();
+  db.move(2_000);
+  await runner();
+  const retrying = await store.read(tab.owner);
+  assert.equal(retrying.job.status, 'running');
+  assert.equal(retrying.job.responseId, 'resp_new');
+  db.move(4_000);
+  await runner();
+  assert.equal(
+    (await tab.send()).job.result.applicationBrief,
+    completeReview(input).applicationBrief,
+  );
+  assert.equal(await runner(), 0);
+  assert.equal(polls, 2);
+});
+
+void test('an older worker cannot cancel a response that a newer lease is still polling', async (t) => {
+  const db = database(t);
+  const store = db.open();
+  const slowPoll = Promise.withResolvers();
+  const slowPollStarted = Promise.withResolvers();
+  const cancellations = [];
+  let polls = 0;
+  const provider = fakeProvider({
+    async poll() {
+      if (++polls > 1) return { responseId: 'resp_review' };
+      slowPollStarted.resolve();
+      return slowPoll.promise;
+    },
+    async cancel(id) {
+      cancellations.push(id);
+    },
+  });
+  const tab = browser(validationService(store, provider, db.now));
+  await tab.send();
+  await tab.submit();
+  const oldWorker = createValidationRunner(store, provider, db.now);
+  await oldWorker();
+  const running = await store.read(tab.owner);
+  await store.write(tab.owner, running.version, {
+    ...running.job,
+    pollFailures: 3,
+  });
+
+  db.move(2_000);
+  const oldAttempt = oldWorker();
+  await slowPollStarted.promise;
+  db.move(25_000);
+  const newWorker = createValidationRunner(db.open(), provider, db.now);
+  await newWorker();
+  const adopted = await store.read(tab.owner);
+  assert.equal(adopted.job.responseId, 'resp_review');
+  assert.equal(adopted.job.pollFailures, 0);
+
+  slowPoll.reject(
+    Object.assign(new Error('Old network error'), { retryable: true }),
+  );
+  await oldAttempt;
+  assert.deepEqual(cancellations, []);
+  assert.deepEqual(await store.read(tab.owner), adopted);
 });

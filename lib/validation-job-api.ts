@@ -175,27 +175,22 @@ export function createValidationJobHandler(
         );
       }
 
-      const id = url.searchParams.get('jobId');
-      if (!uuid(id))
-        return json({ error: 'A valid validation job ID is required.' }, 400);
-
-      if (request.method === 'PATCH' || request.method === 'DELETE') {
-        const job =
-          request.method === 'PATCH'
-            ? await jobs.advance(owner, id)
-            : await jobs.cancel(owner, id);
-        return job
-          ? json({ job })
-          : json(
-              {
-                job: null,
-                error: 'This validation job is no longer available.',
-              },
-              404,
-            );
+      if (request.method !== 'DELETE') {
+        return json({ error: 'Method not allowed.' }, 405);
       }
 
-      return json({ error: 'Method not allowed.' }, 405);
+      const id = url.searchParams.get('jobId');
+      if (!uuid(id)) {
+        return json({ error: 'A valid validation job ID is required.' }, 400);
+      }
+
+      const job = await jobs.cancel(owner, id);
+      return job
+        ? json({ job })
+        : json(
+            { job: null, error: 'This validation job is no longer available.' },
+            404,
+          );
     } catch {
       return json(
         {

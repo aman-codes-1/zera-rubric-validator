@@ -190,10 +190,10 @@ If the main AI review fails or returns incomplete results, Zera does not produce
 
 ### Validation jobs
 
-- `POST /api/validate` stores a queued job. `GET /api/validate` recovers the browser session's latest job. `PATCH /api/validate?jobId=…` advances one step. `DELETE /api/validate?jobId=…` cancels the job if it is still active.
+- `POST /api/validate` stores and schedules a queued job. `GET /api/validate` reads the browser session's latest job. `DELETE /api/validate?jobId=…` cancels an active job.
 - An HTTP-only session cookie scopes access. A browser session can have one active job. Matching concurrent submissions attach to that job, and stale requests cannot replace a newer job. Starting another job after completion replaces the previous report. The latest stored job is recoverable for up to 24 hours after its last update.
-- The server keeps the OpenAI response ID, review and correction state, and polling backoff. OpenAI runs each dispatched response in the background. If the page is closed, the already-dispatched response can continue and the app advances the next step when the browser reconnects. Jobs have a 30-minute deadline. [OpenAI background mode](https://developers.openai.com/api/docs/guides/background)
-- Storage updates are conditional so competing requests can claim a step only once. On cancellation, the app discards late output and requests upstream cancellation when it has a response ID. If a dispatch outcome is uncertain and no response ID was saved, the job ends without automatically submitting another OpenAI request.
+- The worker reads from the durable queue, submits and retrieves OpenAI background responses, runs correction repair, and saves the final report while the browser is closed. The queue stores the next attempt time, and the job keeps its response ID and retry state. Jobs have a 30-minute deadline. [OpenAI background mode](https://developers.openai.com/api/docs/guides/background)
+- Queue and job updates are atomic. After a worker stops, another can reclaim an expired lease and retrieve the existing OpenAI response. Stale results cannot replace a newer worker's report or a cancellation. If the worker stops during submission before it can save a response ID, the stage ends without issuing a duplicate OpenAI request.
 
 ## Tech stack
 
@@ -205,6 +205,7 @@ If the main AI review fails or returns incomplete results, Zera does not produce
 - OpenAI Responses API with web search and structured outputs
 - Vercel Functions through a Next.js Route Handler for hosted execution
 - SQLite for single-host local development and Upstash Redis for shared hosted job storage
+- A standalone Node.js validation worker for production
 
 ## Local setup
 
@@ -246,29 +247,41 @@ Keep `OPENAI_API_KEY` private. It is used only by the server-side validation wor
 npm run dev
 ```
 
-Open [the local validator](http://localhost:3000/).
+The development command starts both Next.js and a validation worker. Open [the local validator](http://localhost:3000/).
 
 ## Available scripts
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | Starts Next.js with the local `/api/validate` handler. |
+| `npm run dev` | Starts Next.js and a local validation worker. |
 | `npm run build` | Creates the server-capable production Next.js build used by Vercel. |
-| `npm run start` | Runs the production Next.js build locally. |
-| `npm test` | Runs the validation job, recovery, and OpenAI protocol regression tests with a temporary SQLite database and mocked provider calls. |
+| `npm run start` | Runs the production Next.js web process. |
+| `npm run worker` | Runs the production validation worker as a long-lived Node.js process. |
+| `npm test` | Runs the job lifecycle, queue, restart, and OpenAI protocol regression tests. |
+| `npm run test:staging` | Exercises the production build and worker in isolated local processes with a loopback OpenAI fixture. |
 | `npm run lint` | Checks the codebase with Oxlint. |
 | `npm run format` | Formats the project with Oxfmt. |
 
-## Vercel deployment
+## Production deployment
 
-1. Import the GitHub repository into Vercel and keep the detected framework as **Next.js**.
-2. Leave the build command as `npm run build`; do not configure the output directory as `out`.
-3. Add `OPENAI_API_KEY` in **Project Settings → Environment Variables** for Production and Preview.
-4. Optionally add `OPENAI_MODEL`; the server defaults to `gpt-5.4-mini` when it is omitted.
-5. Create a regional Upstash Redis database and configure `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in Production and Preview. Hosted validation requires shared storage. [Upstash Redis REST setup](https://upstash.com/docs/redis/features/restapi)
-6. Redeploy after saving the environment variables.
+Run the web process and `npm run worker` as separate services. Configure the worker host to restart the process on failure. For a single-host deployment, point both processes at the same absolute `VALIDATION_JOB_DB_PATH` on a persistent volume. For multi-host deployment, use the same regional Upstash Redis database and `VALIDATION_JOB_NAMESPACE` for both processes. Keep Preview and Production on separate namespaces or databases. Set `OPENAI_API_KEY` in both services and use the same `OPENAI_MODEL` when overriding the default.
 
-The browser calls the same-origin `/api/validate` endpoint. No Vercel domain needs to be registered with OpenAI, and the API key remains available only to the server-side Route Handler.
+For Vercel, deploy the Next.js web process there and run the worker on a host that supports long-lived Node.js services. Configure `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, and `VALIDATION_JOB_NAMESPACE` in both environments. Use `npm run build` for the Vercel build and keep the Next.js output directory. The Cloudflare adapter can use the same worker and shared settings. [Upstash Redis REST setup](https://upstash.com/docs/redis/features/restapi)
+
+When upgrading to the background queue, update the web process before starting the new worker. SQLite adds the schedule on startup. The first Redis worker scans the configured namespace once to schedule jobs written by the older version.
+
+## Staging recovery exercise
+
+Build the production app and run the isolated exercise.
+
+```bash
+npm run build
+npm run test:staging
+```
+
+The exercise submits a batch, stops sending browser requests, and kills the worker after it starts polling for correction repair. Two replacement workers contend for the expired lease. The OpenAI fixture replays the first stage's completed response during correction repair. The exercise checks that one report is stored, that it contains the correct repair, and that a separate cancellation stays final after a late provider success.
+
+To exercise the hosted storage adapter too, run `npm run test:staging -- --redis` with `redis-server` and `redis-cli` on your path, or set `REDIS_SERVER` and `REDIS_CLI` to their executable paths. It uses a temporary Redis process and a loopback REST gateway. Both modes use fixture inputs and credentials.
 
 ## Project structure
 
@@ -281,11 +294,14 @@ lib/constants.mjs           Shared Zera product naming
 lib/rubric-validation.ts    Shared deterministic checks and correction rules
 lib/validation-job-api.ts  Session-scoped validation job API
 lib/validation-jobs.ts     Job lifecycle and upstream orchestration
-scripts/dev-server.mjs      Local Next.js server
+scripts/dev-server.mjs      Local Next.js server and worker
+scripts/validation-worker.mjs
+                            Standalone production worker entry point
 scripts/prepare-sites-output.mjs
                             Legacy Cloudflare static-export preparation
 worker/feather-worker.js   OpenAI review and correction requests
 worker/index.ts            Legacy Cloudflare adapter using the same job API
+worker/validation-runner.ts  Durable queue runner
 test/                      Automated validation job regression tests
 ```
 

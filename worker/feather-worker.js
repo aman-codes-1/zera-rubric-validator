@@ -419,12 +419,15 @@ function parseOpenAIResponse(
   expectedApplicationIds,
   expectedResponseId,
 ) {
-  if (
-    !response ||
-    !RESPONSE_ID.test(response.id) ||
-    (expectedResponseId && response.id !== expectedResponseId)
-  ) {
+  if (!response || !RESPONSE_ID.test(response.id)) {
     throw new OpenAIReviewError('OpenAI returned an invalid response ID.');
+  }
+  if (expectedResponseId && response.id !== expectedResponseId) {
+    // A stale or misrouted response cannot satisfy a different stage.
+    throw new OpenAIReviewError(
+      'OpenAI returned a different response ID.',
+      true,
+    );
   }
 
   if (response.status === 'queued' || response.status === 'in_progress') {

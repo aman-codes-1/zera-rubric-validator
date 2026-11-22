@@ -1295,9 +1295,11 @@ export default function Home() {
                   <p className="mt-0.5 text-xs text-zinc-500">
                     {aiStatus === "idle" && "Waiting for a batch"}
                     {aiStatus === "researching" &&
-                      (isRepairing
-                        ? "Preparing suggested corrections"
-                        : "Searching product documentation")}
+                      (job?.status === "queued"
+                        ? "Queued for validation"
+                        : isRepairing
+                          ? "Preparing suggested corrections"
+                          : "Searching product documentation")}
                     {aiStatus === "completed" && "Documentation context ready"}
                     {aiStatus === "failed" && "AI review unavailable"}
                     {aiStatus === "cancelled" && "Validation cancelled"}

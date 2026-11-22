@@ -4,6 +4,7 @@ import type { ValidationInput } from './rubric-validation.ts';
 const ENDPOINT = '/api/validate';
 const PENDING_KEY = 'zera.validation.pending';
 const DISMISSED_KEY = 'zera.validation.dismissed';
+const STATUS_INTERVAL_MS = 2_000;
 
 type Command =
   | {
@@ -55,7 +56,7 @@ function pause(ms: number, signal: AbortSignal) {
 
 export function isActiveJob(
   job: PublicJob | null | undefined,
-): job is Extract<PublicJob, { pollAfterMs: number }> {
+): job is Extract<PublicJob, { phase: string }> {
   return job?.status === 'queued' || job?.status === 'running';
 }
 
@@ -227,36 +228,25 @@ export function createValidationJobClient(
     if (connect && !(await initialize(signal))) return;
     if (command && !(await sendCommand(signal))) return;
 
-    for (;;) {
-      const job = state.job;
-      if (!job || (job.status !== 'queued' && job.status !== 'running')) return;
-      if (job.pollAfterMs) await wait(Math.max(250, job.pollAfterMs), signal);
+    while (isActiveJob(state.job)) {
+      await wait(STATUS_INTERVAL_MS, signal);
       if (signal.aborted) return;
 
       const result = await requestWithRetry(
-        ENDPOINT + '?jobId=' + job.id,
-        {
-          method: 'PATCH',
-        },
+        ENDPOINT,
+        { method: 'GET' },
         signal,
       );
       if (!result || signal.aborted) return;
-
-      if (result.response.ok) {
-        show(result.body.job ?? null);
-      } else if (
-        result.response.status === 404 ||
-        result.response.status === 401
-      ) {
-        if (!(await initialize(signal))) return;
-        if (!state.job)
-          update({ error: 'This validation job is no longer available.' });
-      } else {
+      if (!result.response.ok) {
         update({
           error: result.body.error || 'Could not check the current validation.',
         });
         return;
       }
+
+      const job = result.body.job ?? null;
+      show(job, job ? '' : 'This validation job is no longer available.');
     }
   }
 

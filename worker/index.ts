@@ -8,6 +8,7 @@ import { createRedisJobStore } from '../lib/validation-job-redis.ts';
 interface WorkerEnvironment extends ValidationEnvironment {
   UPSTASH_REDIS_REST_URL?: string;
   UPSTASH_REDIS_REST_TOKEN?: string;
+  VALIDATION_JOB_NAMESPACE?: string;
   ASSETS: { fetch(request: Request): Promise<Response> };
 }
 
@@ -39,7 +40,7 @@ const worker = {
       const store = createRedisJobStore(
         env.UPSTASH_REDIS_REST_URL,
         env.UPSTASH_REDIS_REST_TOKEN,
-        'zera:validation:v1:cloudflare',
+        env.VALIDATION_JOB_NAMESPACE || 'zera:validation:v1:cloudflare',
       );
       return createConfiguredValidationHandler(store, env)(request);
     }
