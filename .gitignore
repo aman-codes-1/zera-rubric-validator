@@ -37,3 +37,6 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# local validation job storage
+/.validation-jobs/

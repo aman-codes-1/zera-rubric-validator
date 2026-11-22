@@ -141,7 +141,7 @@ Feature-request validation depends on the quality and availability of official p
 
 Alternatively, choose **Load provided example** to populate the sample rubrics and automatically select `quickbooks` and the matching batch. This automatic selection applies only to the provided example; pasted or typed JSON requires manual application and batch choices.
 
-**Clear Fields** becomes available when any application, batch, or JSON value is present and resets all three inputs.
+Reload the page to recover the latest validation for this browser session, including its original batch, progress, and final report. Select **Cancel validation** to stop an active job. The form is editable again after the job reaches a terminal state. **Clear Fields** resets the form and dismisses the report in the current tab.
 
 ## Batch requirements
 
@@ -183,10 +183,17 @@ For a feature request, use `"tags": ["feature request"]` and set `"reproduction_
 4. The server creates a validated application scope from the shared registry: the selected application first, followed by every other supported application whose configured name or alias appears anywhere in the complete rubric JSON.
 5. The OpenAI Responses API searches official documentation separately for every application in scope and grammar-checks every text field. For feature requests only, it uses the matching application's documentation to evaluate the functional capability described in `criterion`, `expected_behavior`, and `actual_behavior`; it ignores section names and UI locations.
 6. The structured response must include the official documentation pages used for each application. Zera validates and merges those URLs with web-search citations, labels them by application, and displays their page titles and complete clickable URLs in **Application knowledge**.
-7. If any warning or error contains a missing or unchanged replacement, Zera runs a compact correction-only repair flow. Each returned field is verified before merging, and any unresolved fields are retried without re-running documentation research.
+7. If any warning or error contains a missing or unchanged replacement, the job runs the correction-only repair flow. Each returned field is verified against the requested targets before merging. Zera tries up to three times without repeating the main review.
 8. Zera combines deterministic and AI findings into a detailed report, highlights warnings in yellow and errors in red, shows corrected replacements in green, and produces corrected JSON that matches the displayed corrections.
 
-If the main AI review fails or returns incomplete results, Zera does not produce a validation report. An unchanged correction does not invalidate an otherwise completed review; it triggers the verified field-level correction flow instead.
+If the main AI review fails or returns incomplete results, Zera does not produce a validation report. If only correction repair fails, Zera displays the verified review and flags the remaining findings for manual correction.
+
+### Validation jobs
+
+- `POST /api/validate` stores a queued job. `GET /api/validate` recovers the browser session's latest job. `PATCH /api/validate?jobId=…` advances one step. `DELETE /api/validate?jobId=…` cancels the job if it is still active.
+- An HTTP-only session cookie scopes access. A browser session can have one active job. Matching concurrent submissions attach to that job, and stale requests cannot replace a newer job. Starting another job after completion replaces the previous report. The latest stored job is recoverable for up to 24 hours after its last update.
+- The server keeps the OpenAI response ID, review and correction state, and polling backoff. OpenAI runs each dispatched response in the background. If the page is closed, the already-dispatched response can continue and the app advances the next step when the browser reconnects. Jobs have a 30-minute deadline. [OpenAI background mode](https://developers.openai.com/api/docs/guides/background)
+- Storage updates are conditional so competing requests can claim a step only once. On cancellation, the app discards late output and requests upstream cancellation when it has a response ID. If a dispatch outcome is uncertain and no response ID was saved, the job ends without automatically submitting another OpenAI request.
 
 ## Tech stack
 
@@ -197,6 +204,7 @@ If the main AI review fails or returns incomplete results, Zera does not produce
 - shadcn/ui and Base UI
 - OpenAI Responses API with web search and structured outputs
 - Vercel Functions through a Next.js Route Handler for hosted execution
+- SQLite for single-host local development and Upstash Redis for shared hosted job storage
 
 ## Local setup
 
@@ -230,7 +238,7 @@ OPENAI_MODEL=gpt-5.4-mini
 
 Keep `OPENAI_API_KEY` private. It is used only by the server-side validation worker and must never be exposed in client-side code.
 
-`DEV_HOST` and `DEV_PORT` are used only by the custom local development server. Do not set `DEV_HOST` to the Vercel domain.
+`DEV_HOST` and `DEV_PORT` are used only by the custom local development server. Validation jobs use `.validation-jobs/jobs.sqlite` locally by default. To use a different local database file, set `VALIDATION_JOB_DB_PATH` to a path on a writable persistent volume.
 
 ### Start the development server
 
@@ -238,7 +246,7 @@ Keep `OPENAI_API_KEY` private. It is used only by the server-side validation wor
 npm run dev
 ```
 
-Open [Zera Rubric Validator](https://zera-rubric-validator.vercel.app/).
+Open [the local validator](http://localhost:3000/).
 
 ## Available scripts
 
@@ -247,6 +255,7 @@ Open [Zera Rubric Validator](https://zera-rubric-validator.vercel.app/).
 | `npm run dev` | Starts Next.js with the local `/api/validate` handler. |
 | `npm run build` | Creates the server-capable production Next.js build used by Vercel. |
 | `npm run start` | Runs the production Next.js build locally. |
+| `npm test` | Runs the validation job, recovery, and OpenAI protocol regression tests with a temporary SQLite database and mocked provider calls. |
 | `npm run lint` | Checks the codebase with Oxlint. |
 | `npm run format` | Formats the project with Oxfmt. |
 
@@ -256,7 +265,8 @@ Open [Zera Rubric Validator](https://zera-rubric-validator.vercel.app/).
 2. Leave the build command as `npm run build`; do not configure the output directory as `out`.
 3. Add `OPENAI_API_KEY` in **Project Settings → Environment Variables** for Production and Preview.
 4. Optionally add `OPENAI_MODEL`; the server defaults to `gpt-5.4-mini` when it is omitted.
-5. Redeploy after saving the environment variables.
+5. Create a regional Upstash Redis database and configure `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` in Production and Preview. Hosted validation requires shared storage. [Upstash Redis REST setup](https://upstash.com/docs/redis/features/restapi)
+6. Redeploy after saving the environment variables.
 
 The browser calls the same-origin `/api/validate` endpoint. No Vercel domain needs to be registered with OpenAI, and the API key remains available only to the server-side Route Handler.
 
@@ -268,10 +278,15 @@ app/api/validate/route.ts   Vercel-compatible validation Route Handler
 components/ui/              Reusable interface components
 lib/applications.mjs        Supported-application registry, alias detection, and scope resolution
 lib/constants.mjs           Shared Zera product naming
-scripts/dev-server.mjs      Local Next.js server and validation API bridge
+lib/rubric-validation.ts    Shared deterministic checks and correction rules
+lib/validation-job-api.ts  Session-scoped validation job API
+lib/validation-jobs.ts     Job lifecycle and upstream orchestration
+scripts/dev-server.mjs      Local Next.js server
 scripts/prepare-sites-output.mjs
                             Legacy Cloudflare static-export preparation
-worker/feather-worker.js     Shared OpenAI review logic and Cloudflare adapter
+worker/feather-worker.js   OpenAI review and correction requests
+worker/index.ts            Legacy Cloudflare adapter using the same job API
+test/                      Automated validation job regression tests
 ```
 
 ## Validation outcomes
