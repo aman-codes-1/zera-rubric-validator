@@ -48,35 +48,41 @@ function normalizedReviewedApplications(value, expectedApplicationIds = []) {
     if (
       !application ||
       typeof application.id !== 'string' ||
-      (application.role !== 'selected' && application.role !== 'detected_in_rubrics') ||
+      (application.role !== 'selected' &&
+        application.role !== 'detected_in_rubrics') ||
       !Array.isArray(application.officialDomains)
     ) {
       continue;
     }
 
     const configuredApplication = getSupportedApplication(application.id);
-    if (!configuredApplication || submittedById.has(configuredApplication.id)) continue;
+    if (!configuredApplication || submittedById.has(configuredApplication.id))
+      continue;
     submittedById.set(configuredApplication.id, {
       role: application.role,
       officialDomains: [
-        ...new Set(application.officialDomains.map(normalizedDomain).filter(Boolean)),
+        ...new Set(
+          application.officialDomains.map(normalizedDomain).filter(Boolean),
+        ),
       ],
       documentationSources: (Array.isArray(application.documentationSources)
         ? application.documentationSources
-        : [])
+        : []
+      )
         .map(normalizedDocumentationSource)
         .filter(Boolean),
     });
   }
 
-  const validatedApplicationIds = expectedApplicationIds
-    .filter((applicationId, index) =>
+  const validatedApplicationIds = expectedApplicationIds.filter(
+    (applicationId, index) =>
       getSupportedApplication(applicationId) &&
       expectedApplicationIds.indexOf(applicationId) === index,
-    );
-  const applicationIds = validatedApplicationIds.length > 0
-    ? validatedApplicationIds
-    : [...submittedById.keys()];
+  );
+  const applicationIds =
+    validatedApplicationIds.length > 0
+      ? validatedApplicationIds
+      : [...submittedById.keys()];
 
   return applicationIds.map((applicationId, index) => {
     const configuredApplication = getSupportedApplication(applicationId);
@@ -84,9 +90,12 @@ function normalizedReviewedApplications(value, expectedApplicationIds = []) {
     return {
       id: configuredApplication.id,
       name: configuredApplication.label,
-      role: validatedApplicationIds.length > 0
-        ? index === 0 ? 'selected' : 'detected_in_rubrics'
-        : submittedApplication.role,
+      role:
+        validatedApplicationIds.length > 0
+          ? index === 0
+            ? 'selected'
+            : 'detected_in_rubrics'
+          : submittedApplication.role,
       officialDomains: submittedApplication?.officialDomains || [],
       documentationSources: submittedApplication?.documentationSources || [],
     };
@@ -114,17 +123,9 @@ function applicationForSource(source, applicationsReviewed) {
     }
   }
 
-  return applicationsReviewed.length === 1 ? applicationsReviewed[0].name : null;
-}
-
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      'content-type': 'application/json; charset=utf-8',
-      'cache-control': 'no-store',
-    },
-  });
+  return applicationsReviewed.length === 1
+    ? applicationsReviewed[0].name
+    : null;
 }
 
 function getOutputText(response) {
@@ -186,7 +187,8 @@ function getSources(response, applicationsReviewed = []) {
     return {
       ...source,
       application:
-        details.application || applicationForSource(source, applicationsReviewed),
+        details.application ||
+        applicationForSource(source, applicationsReviewed),
     };
   });
 }
@@ -241,7 +243,8 @@ const reviewSchema = {
           id: {
             type: 'string',
             enum: SUPPORTED_APPLICATION_IDS,
-            description: 'The application identifier from the supplied validated scope.',
+            description:
+              'The application identifier from the supplied validated scope.',
           },
           role: {
             type: 'string',
@@ -401,132 +404,80 @@ const correctionRepairSchema = {
   },
 };
 
-function reviewResponse(responsePayload) {
-  if (responsePayload.status === 'queued' || responsePayload.status === 'in_progress') {
-    return json(
-      {
-        responseId: responsePayload.id,
-        status: responsePayload.status,
-      },
-      202,
+class OpenAIReviewError extends Error {
+  constructor(message, retryable = false) {
+    super(message);
+    this.retryable = retryable;
+  }
+}
+
+const RESPONSE_ID = /^resp_[A-Za-z0-9_-]+$/;
+
+function parseOpenAIResponse(
+  response,
+  phase,
+  expectedApplicationIds,
+  expectedResponseId,
+) {
+  if (
+    !response ||
+    !RESPONSE_ID.test(response.id) ||
+    (expectedResponseId && response.id !== expectedResponseId)
+  ) {
+    throw new OpenAIReviewError('OpenAI returned an invalid response ID.');
+  }
+
+  if (response.status === 'queued' || response.status === 'in_progress') {
+    return { responseId: response.id };
+  }
+  if (response.status !== 'completed') {
+    throw new OpenAIReviewError(
+      phase === 'review'
+        ? 'OpenAI did not complete the documentation review.'
+        : 'OpenAI did not complete the correction repair.',
     );
   }
 
-  if (responsePayload.status !== 'completed') {
-    return json(
-      {
-        error:
-          responsePayload?.error?.message ||
-          responsePayload?.incomplete_details?.reason ||
-          'OpenAI could not complete the documentation review.',
-        code: 'openai_response_not_completed',
-      },
-      502,
-    );
-  }
-
-  const outputText = getOutputText(responsePayload);
-  if (!outputText) {
-    return json({ error: 'OpenAI returned no structured review.' }, 502);
-  }
-
-  let review;
+  let output;
   try {
-    review = JSON.parse(outputText);
+    output = JSON.parse(getOutputText(response));
+    if (!output || typeof output !== 'object' || Array.isArray(output))
+      throw new Error();
   } catch {
-    return json({ error: 'OpenAI returned an unreadable structured review.' }, 502);
+    throw new OpenAIReviewError(
+      'OpenAI returned unreadable structured output.',
+    );
   }
 
-  const expectedApplicationIds = typeof responsePayload.metadata?.application_scope === 'string'
-    ? responsePayload.metadata.application_scope.split(',').filter(Boolean)
-    : [];
+  if (phase === 'repair') return { result: output };
+
+  if (!Array.isArray(output.applicationsReviewed)) {
+    throw new OpenAIReviewError(
+      'OpenAI omitted the application documentation context.',
+    );
+  }
   const applicationsReviewed = normalizedReviewedApplications(
-    review.applicationsReviewed,
+    output.applicationsReviewed,
     expectedApplicationIds,
   );
-
-  return json({
-    ...review,
-    applicationsReviewed,
-    sources: getSources(responsePayload, applicationsReviewed),
-  });
+  return {
+    result: {
+      ...output,
+      applicationsReviewed,
+      sources: getSources(response, applicationsReviewed),
+    },
+  };
 }
 
-function correctionRepairResponse(responsePayload) {
-  if (responsePayload.status === 'queued' || responsePayload.status === 'in_progress') {
-    return json(
-      {
-        responseId: responsePayload.id,
-        responseType: 'correction_repair',
-        status: responsePayload.status,
-      },
-      202,
-    );
-  }
-
-  if (responsePayload.status !== 'completed') {
-    return json(
-      {
-        error:
-          responsePayload?.error?.message ||
-          responsePayload?.incomplete_details?.reason ||
-          'OpenAI could not complete the correction repair.',
-        code: 'openai_correction_repair_not_completed',
-      },
-      502,
-    );
-  }
-
-  const outputText = getOutputText(responsePayload);
-  if (!outputText) {
-    return json({ error: 'OpenAI returned no correction repair.' }, 502);
-  }
-
-  try {
-    return json(JSON.parse(outputText));
-  } catch {
-    return json({ error: 'OpenAI returned an unreadable correction repair.' }, 502);
-  }
-}
-
-async function repairCorrectionsWithOpenAI(body, env) {
-  const allowedFields = new Set([
-    'criterion',
-    'tag',
-    'page_or_workflow',
-    'reproduction_steps',
-    'expected_behavior',
-    'actual_behavior',
-  ]);
-  const targetsAreValid =
-    Array.isArray(body.targets) &&
-    body.targets.length > 0 &&
-    body.targets.length <= 150 &&
-    body.targets.every(
+function buildRepairRequest(body, model) {
+  if (
+    body.targets.some(
       (target) =>
-        target &&
-        Number.isInteger(target.index) &&
-        target.index >= 0 &&
-        target.index < body.rubrics.length &&
-        allowedFields.has(target.field) &&
-        typeof target.originalText === 'string' &&
-        target.originalText.trim().length > 0 &&
-        target.originalText.length <= 12000 &&
-        Array.isArray(target.messages) &&
-        target.messages.every((message) => typeof message === 'string') &&
-        Array.isArray(target.suggestions) &&
-        target.suggestions.every((suggestion) => typeof suggestion === 'string') &&
-        Array.isArray(target.kinds) &&
-        target.kinds.length > 0 &&
-        target.kinds.every(
-          (kind) => kind === 'grammar' || kind === 'documentation' || kind === 'validation',
-        ) &&
-        typeof target.documentationSummary === 'string' &&
-        target.documentationSummary.length <= 12000,
-    );
-
-  if (!targetsAreValid) {
-    return json({ error: 'Provide at least one correction target to repair.' }, 400);
+        target.originalText.length > 12_000 ||
+        target.documentationSummary.length > 12_000,
+    )
+  ) {
+    throw new OpenAIReviewError('A correction target is too large to repair.');
   }
 
   const instructions = [
@@ -557,12 +508,12 @@ async function repairCorrectionsWithOpenAI(body, env) {
     JSON.stringify(body.targets),
   ].join('\n\n');
 
-  const needsDocumentationResearch = body.targets.some(
-    (target) => target.kinds.includes('documentation'),
+  const needsDocumentationResearch = body.targets.some((target) =>
+    target.kinds.includes('documentation'),
   );
 
   const responseRequest = {
-    model: env.OPENAI_MODEL || 'gpt-5.4-mini',
+    model,
     instructions,
     input,
     max_output_tokens: 24000,
@@ -581,68 +532,17 @@ async function repairCorrectionsWithOpenAI(body, env) {
 
   if (needsDocumentationResearch) {
     responseRequest.tools = [{ type: 'web_search' }];
-    responseRequest.max_tool_calls = Math.min(12, Math.max(4, body.targets.length + 2));
-  }
-
-  const openAIResponse = await fetch(OPENAI_RESPONSES_URL, {
-    method: 'POST',
-    headers: {
-      authorization: 'Bearer ' + env.OPENAI_API_KEY,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(responseRequest),
-  });
-
-  const responsePayload = await openAIResponse.json();
-  if (!openAIResponse.ok) {
-    return json(
-      {
-        error:
-          responsePayload?.error?.message ||
-          'OpenAI could not repair the rubric corrections.',
-        code: 'openai_correction_repair_failed',
-      },
-      openAIResponse.status,
+    responseRequest.max_tool_calls = Math.min(
+      12,
+      Math.max(4, body.targets.length + 2),
     );
   }
 
-  return correctionRepairResponse(responsePayload);
+  return responseRequest;
 }
 
-export async function validateWithOpenAI(request, env) {
-  if (!env.OPENAI_API_KEY) {
-    return json(
-      {
-        error:
-          'OpenAI review is not configured yet. Validation was not completed.',
-        code: 'missing_openai_api_key',
-      },
-      503,
-    );
-  }
-
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ error: 'Request body must be valid JSON.' }, 400);
-  }
-
-  const application = typeof body.application === 'string' ? body.application.trim() : '';
-  if (!getSupportedApplication(application)) {
-    return json({ error: 'Select a valid application.' }, 400);
-  }
-
-  if (!Array.isArray(body.rubrics) || body.rubrics.length === 0 || body.rubrics.length > 25) {
-    return json({ error: 'Provide between 1 and 25 rubric entries.' }, 400);
-  }
-
-  if (body.action === 'repair_corrections') {
-    return repairCorrectionsWithOpenAI(body, env);
-  }
-
-  const applicationScope = resolveApplicationScope(application, body.rubrics);
-
+function buildReviewRequest(body, model, applicationScope) {
+  const { application } = body;
   const instructions = [
     'You are a rubric quality reviewer. The supplied validated application scope is the single source of truth: it contains the selected application plus every supported application whose configured name or alias was detected anywhere in the complete rubric JSON.',
     'Do not identify, add, validate, or research applications outside the supplied validated scope. This prevents ordinary product words and unapproved names from being treated as applications.',
@@ -701,137 +601,114 @@ export async function validateWithOpenAI(request, env) {
     return count + (tags.length === 1 && tags[0] === 'feature request' ? 1 : 0);
   }, 0);
 
-  const openAIResponse = await fetch(OPENAI_RESPONSES_URL, {
-    method: 'POST',
-    headers: {
-      authorization: 'Bearer ' + env.OPENAI_API_KEY,
-      'content-type': 'application/json',
+  return {
+    model,
+    instructions,
+    input,
+    metadata: {
+      application_scope: applicationScope
+        .map((application) => application.id)
+        .join(','),
     },
-    body: JSON.stringify({
-      model: env.OPENAI_MODEL || 'gpt-5.4-mini',
-      instructions,
-      input,
-      metadata: {
-        application_scope: applicationScope.map((application) => application.id).join(','),
-      },
-      tools: [{ type: 'web_search' }],
-      include: ['web_search_call.action.sources'],
-      max_tool_calls: Math.min(
-        20,
-        Math.max(applicationScope.length * 2 + 2, featureRequestCount + applicationScope.length * 2),
+    tools: [{ type: 'web_search' }],
+    include: ['web_search_call.action.sources'],
+    max_tool_calls: Math.min(
+      20,
+      Math.max(
+        applicationScope.length * 2 + 2,
+        featureRequestCount + applicationScope.length * 2,
       ),
-      max_output_tokens: 24000,
-      reasoning: { effort: 'low' },
-      text: {
-        format: {
-          type: 'json_schema',
-          name: 'rubric_validation',
-          strict: true,
-          schema: reviewSchema,
-        },
+    ),
+    max_output_tokens: 24000,
+    reasoning: { effort: 'low' },
+    text: {
+      format: {
+        type: 'json_schema',
+        name: 'rubric_validation',
+        strict: true,
+        schema: reviewSchema,
       },
-      background: true,
-      store: true,
-    }),
-  });
-
-  const responsePayload = await openAIResponse.json();
-
-  if (!openAIResponse.ok) {
-    return json(
-      {
-        error:
-          responsePayload?.error?.message ||
-          'OpenAI could not complete the documentation review.',
-        code: 'openai_request_failed',
-      },
-      openAIResponse.status,
-    );
-  }
-
-  return reviewResponse(responsePayload);
-}
-
-export async function retrieveOpenAIReview(request, env) {
-  if (!env.OPENAI_API_KEY) {
-    return json(
-      {
-        error: 'OpenAI review is not configured yet. Validation was not completed.',
-        code: 'missing_openai_api_key',
-      },
-      503,
-    );
-  }
-
-  const responseId = new URL(request.url).searchParams.get('responseId') || '';
-  if (!/^resp_[A-Za-z0-9_-]+$/.test(responseId)) {
-    return json({ error: 'A valid validation response ID is required.' }, 400);
-  }
-
-  const retrievalUrl = new URL(
-    `${OPENAI_RESPONSES_URL}/${encodeURIComponent(responseId)}`,
-  );
-  retrievalUrl.searchParams.append(
-    'include[]',
-    'web_search_call.action.sources',
-  );
-
-  const openAIResponse = await fetch(retrievalUrl, {
-    headers: {
-      authorization: 'Bearer ' + env.OPENAI_API_KEY,
     },
-  });
-  const responsePayload = await openAIResponse.json();
-
-  if (!openAIResponse.ok) {
-    return json(
-      {
-        error:
-          responsePayload?.error?.message ||
-          'OpenAI could not retrieve the documentation review.',
-        code: 'openai_retrieval_failed',
-      },
-      openAIResponse.status,
-    );
-  }
-
-  return new URL(request.url).searchParams.get('responseType') === 'correction_repair'
-    ? correctionRepairResponse(responsePayload)
-    : reviewResponse(responsePayload);
+    background: true,
+    store: true,
+  };
 }
 
-export async function handleValidationRequest(request, env) {
-  if (request.method === 'POST') return validateWithOpenAI(request, env);
-  if (request.method === 'GET') return retrieveOpenAIReview(request, env);
-  return json({ error: 'Method not allowed.' }, 405);
-}
+export function createOpenAIReviewProvider(env, fetchImpl = fetch) {
+  const model = env.OPENAI_MODEL || 'gpt-5.4-mini';
 
-async function serveAssets(request, env) {
-  const response = await env.ASSETS.fetch(request);
-  if (response.status !== 404 || request.method !== 'GET') return response;
-
-  const url = new URL(request.url);
-  const finalSegment = url.pathname.split('/').filter(Boolean).at(-1) ?? '';
-  if (finalSegment.includes('.')) return response;
-
-  url.pathname = url.pathname.endsWith('/')
-    ? url.pathname + 'index.html'
-    : url.pathname + '/index.html';
-  const routeResponse = await env.ASSETS.fetch(new Request(url, request));
-  if (routeResponse.status !== 404) return routeResponse;
-
-  url.pathname = '/index.html';
-  return env.ASSETS.fetch(new Request(url, request));
-}
-
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-
-    if (url.pathname === '/api/validate' || url.pathname === '/api/validate/') {
-      return handleValidationRequest(request, env);
+  async function request(url, method, body) {
+    let response;
+    try {
+      response = await fetchImpl(url.toString(), {
+        method,
+        headers: {
+          authorization: 'Bearer ' + env.OPENAI_API_KEY,
+          ...(body ? { 'content-type': 'application/json' } : {}),
+        },
+        ...(body ? { body: JSON.stringify(body) } : {}),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch {
+      throw new OpenAIReviewError('Could not connect to OpenAI.', true);
     }
 
-    return serveAssets(request, env);
-  },
-};
+    if (!response.ok) {
+      const retryable =
+        response.status === 408 ||
+        response.status === 429 ||
+        response.status >= 500;
+      throw new OpenAIReviewError(
+        'OpenAI could not process the validation request.',
+        retryable,
+      );
+    }
+
+    try {
+      return await response.json();
+    } catch {
+      throw new OpenAIReviewError(
+        'OpenAI returned an unreadable response.',
+        true,
+      );
+    }
+  }
+
+  return {
+    configured: Boolean(env.OPENAI_API_KEY),
+    async start(input, phase, targets) {
+      const scope = resolveApplicationScope(input.application, input.rubrics);
+      const body =
+        phase === 'repair'
+          ? buildRepairRequest({ ...input, targets }, model)
+          : buildReviewRequest(input, model, scope);
+      const response = await request(OPENAI_RESPONSES_URL, 'POST', body);
+      return parseOpenAIResponse(
+        response,
+        phase,
+        scope.map(({ id }) => id),
+      );
+    },
+    async poll(input, phase, responseId) {
+      const url = new URL(
+        OPENAI_RESPONSES_URL + '/' + encodeURIComponent(responseId),
+      );
+      if (phase === 'review')
+        url.searchParams.append('include[]', 'web_search_call.action.sources');
+      const response = await request(url, 'GET');
+      const scope = resolveApplicationScope(input.application, input.rubrics);
+      return parseOpenAIResponse(
+        response,
+        phase,
+        scope.map(({ id }) => id),
+        responseId,
+      );
+    },
+    async cancel(responseId) {
+      await request(
+        OPENAI_RESPONSES_URL + '/' + encodeURIComponent(responseId) + '/cancel',
+        'POST',
+      );
+    },
+  };
+}

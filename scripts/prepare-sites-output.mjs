@@ -6,20 +6,37 @@ const exportDirectory = path.join(projectDirectory, 'out');
 const distributionDirectory = path.join(projectDirectory, 'dist');
 const serverDirectory = path.join(distributionDirectory, 'server');
 const staticDirectory = path.join(distributionDirectory, 'static');
-const workerEntry = path.join(projectDirectory, 'worker', 'feather-worker.js');
 
 await rm(distributionDirectory, { recursive: true, force: true });
 await mkdir(serverDirectory, { recursive: true });
 await cp(exportDirectory, staticDirectory, { recursive: true });
-await cp(workerEntry, path.join(serverDirectory, 'index.js'));
+await cp(
+  path.join(projectDirectory, 'worker'),
+  path.join(serverDirectory, 'worker'),
+  {
+    recursive: true,
+  },
+);
+await mkdir(path.join(serverDirectory, 'lib'), { recursive: true });
+for (const file of [
+  'applications.mjs',
+  'rubric-validation.ts',
+  'validation-job-api.ts',
+  'validation-job-redis.ts',
+  'validation-jobs.ts',
+]) {
+  await cp(
+    path.join(projectDirectory, 'lib', file),
+    path.join(serverDirectory, 'lib', file),
+  );
+}
 
 const workerConfiguration = {
   topLevelName: 'zera-rubric-validator',
   name: 'zera-rubric-validator',
   compatibility_date: '2026-05-15',
   compatibility_flags: ['nodejs_compat'],
-  main: 'index.js',
-  no_bundle: true,
+  main: 'worker/index.ts',
   assets: {
     directory: '../static',
     binding: 'ASSETS',
